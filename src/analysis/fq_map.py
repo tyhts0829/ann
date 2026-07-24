@@ -263,6 +263,7 @@ class FqMapWidget(QtWidgets.QWidget):
         plots_layout = QtWidgets.QVBoxLayout(self.plots_container)
         plots_layout.setContentsMargins(0, 0, 0, 0)
         plots_layout.setSpacing(0)
+        plots_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
 
         for metric, label, colors in MAP_DEFINITIONS:
             view = self._build_fq_map_view(

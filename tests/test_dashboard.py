@@ -299,3 +299,23 @@ def test_dashboard_window(qtbot, repository: QualityRepository) -> None:
         fq_map.frame_map.rows[0].image_items[0].image,
         fq_map.frame_map.data.ng_rates[0, 95],
     )
+
+    window.resize(1_883, 1_377)
+    qtbot.wait(100)
+    row_rects = [
+        row.widget.geometry()
+        for row in fq_map.frame_map.rows
+    ]
+    assert row_rects[0].top() == 0
+    assert all(
+        current.top() == previous.bottom() + 1
+        for previous, current in zip(row_rects, row_rects[1:])
+    )
+    assert fq_map.frame_map.height() == sum(
+        rectangle.height() for rectangle in row_rects
+    )
+    first_plot = fq_map.frame_map.rows[0].plot_widgets[0]
+    assert first_plot.width() / first_plot.height() == pytest.approx(
+        2.0,
+        abs=0.03,
+    )

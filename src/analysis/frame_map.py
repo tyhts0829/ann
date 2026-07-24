@@ -19,6 +19,11 @@ from src.standardized.quality_data import QualityRepository
 POSITION_X = np.arange(1, 25)
 POSITION_Y = np.arange(1, 13)
 VISIBLE_LOTS = 5
+LEFT_LABEL_WIDTH = 205
+COLOR_BAR_WIDTH = 90
+DEFAULT_ROW_HEIGHT = 126
+MIN_ROW_HEIGHT = 112
+MAX_ROW_HEIGHT = 180
 
 
 @dataclass(frozen=True)
@@ -128,12 +133,19 @@ class FrameMapWidget(QtWidgets.QWidget):
         self.data = build_frame_map_data(repository, lot_numbers)
         self.rows: list[FrameMapRow] = []
         self.selected_colname: str | None = None
+        self._row_height = DEFAULT_ROW_HEIGHT
+        self.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Fixed,
+        )
         self._build_ui()
+        self._set_row_height(DEFAULT_ROW_HEIGHT)
 
     def _build_ui(self) -> None:
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
+        layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
         for metric, label, colors in MAP_DEFINITIONS:
             row = self._build_row(
                 metric,
@@ -152,13 +164,13 @@ class FrameMapWidget(QtWidgets.QWidget):
         """表示中5 lotのPositionマップ行生成。"""
         widget = QtWidgets.QWidget()
         widget.setObjectName("frameMapRow")
-        widget.setFixedHeight(126)
+        widget.setFixedHeight(self._row_height)
         layout = QtWidgets.QHBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
         left_spacer = QtWidgets.QWidget()
-        left_spacer.setFixedWidth(205)
+        left_spacer.setFixedWidth(LEFT_LABEL_WIDTH)
         layout.addWidget(left_spacer)
 
         plot_widgets = []
@@ -185,7 +197,7 @@ class FrameMapWidget(QtWidgets.QWidget):
 
         legend = pg.GraphicsLayoutWidget()
         legend.setBackground("#ffffff")
-        legend.setFixedWidth(90)
+        legend.setFixedWidth(COLOR_BAR_WIDTH)
         color_bar = pg.ColorBarItem(
             values=(0.0, 1.0),
             width=18,
@@ -209,6 +221,24 @@ class FrameMapWidget(QtWidgets.QWidget):
             image_items=image_items,
             color_bar=color_bar,
         )
+
+    def resizeEvent(self, event: object) -> None:
+        """表示幅に合わせたフレームマップ高の更新。"""
+        super().resizeEvent(event)
+        map_width = (
+            self.width() - LEFT_LABEL_WIDTH - COLOR_BAR_WIDTH
+        ) / VISIBLE_LOTS
+        row_height = round(map_width / 2.0) + 2
+        self._set_row_height(
+            max(MIN_ROW_HEIGHT, min(MAX_ROW_HEIGHT, row_height))
+        )
+
+    def _set_row_height(self, height: int) -> None:
+        """24×12セルの縦横比を保つ行高設定。"""
+        self._row_height = height
+        for row in self.rows:
+            row.widget.setFixedHeight(height)
+        self.setFixedHeight(height * len(self.rows))
 
     @staticmethod
     def _add_white_grid(plot_item: pg.PlotItem) -> None:
