@@ -1,0 +1,17 @@
+# GUI
+PySide6==6.11.1
+pyqtgraph==0.14.0
+napari==0.8.0
+magicgui==0.10.2
+
+# Data processing and analysis
+numpy==2.5.1
+pandas==3.0.5
+pyarrow==25.0.0
+scipy==1.18.0
+scikit-learn==1.9.0
+duckdb==1.5.5
+
+# Testing
+pytest==9.1.1
+pytest-qt==4.5.0
