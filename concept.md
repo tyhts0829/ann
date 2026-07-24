@@ -66,7 +66,7 @@ colname
 - `value`は検査項目によって単位や意味が異なるため、異なる`colname`間で生値を直接比較しない。
 - 3台の検査機は`vision_1`、`vision_2`、`vision_3`として表現する。
 - colnameは機台間で重複させず、`vision_1`は`_v1`、`vision_2`は`_v2`、`vision_3`は`_v3`を末尾に付与する。
-- `FrameNo = 1～8`は`vision_1`、`9～16`は`vision_2`、`17～24`は`vision_3`が担当する。
+- 3台のvisionはそれぞれ`FrameNo = 1～24`の全フレームを検査する。
 
 検査項目のベース名は以下の15項目である。vision別サフィックスを含めた一意なcolnameは45項目となる。
 
@@ -78,8 +78,8 @@ colname
 
 完全な1ロットの想定行数は次のとおりである。
 
-24 frames × 24 positions X × 12 positions Y × 15 measurements
-= 103,680 rows / lot
+24 frames × 24 positions X × 12 positions Y × 3 visions × 15 measurements
+= 311,040 rows / lot
 
 # データ処理
 
@@ -87,6 +87,7 @@ colname
 
 1. `src/raw/generate_quality_data.py`で生成し、`data/raw/quality_data_100lots.parquet`へ保存する。この段階では`spec_position`と`spec_usage`を持たない。通常変動はlotとFrameNoを連続時間軸、PositionXとPositionYを空間軸としたfractal 3D Perlin noiseを基調とし、複数octaveの緩やかな工程変動と局所変動を重ねる。短周期や座標軸に沿う人工的な模様を避けるため、Perlinの周期は4096、lacunarityは2.071とし、入力座標を回転してから評価する。
 2. `src/standardized/standardize_quality_data.py`で規格正規化列を追加し、`data/standardized/quality_data_100lots.parquet`へ保存する。
+3. FQマップは`src/analysis/fq_map.py`、フレームマップは`src/analysis/frame_map.py`に分けて実装し、`dashboard.py`が両者を構成する。
 
 ```bash
 .venv/bin/python src/raw/generate_quality_data.py
@@ -143,25 +144,25 @@ fはFrameNoである。
 - 正常ロット、類似異常ロット、対象ロットの3者を上記と同様のビューで比較
 - 総合類似度と、その内訳を表示
 
-現在の概要画面では、各`lot_number × FrameNo × colname`について次の3段のヒートマップを表示する。
+現在の概要画面では、各`lot_number × FrameNo × colname`について次の3段をFQマップと呼ぶ。
 
 1. NG率（Reds相当）
 2. `spec_position`または`spec_usage`の平均（RdBu_r相当）
 3. `spec_position`または`spec_usage`の母標準偏差（Purples相当）
 
-各列は`FrameNo`単位で集計するが、x tick labelにはロット番号だけを表示する。一度に5ロットを表示し、全100ロットは横スクロールで移動する。3段のヒートマップは縦スクロールでき、`meta_category`が`None`の場合は全項目、それ以外は選択カテゴリの`colname`だけを表示する。
+各列は`FrameNo`単位で集計するが、x tick labelにはロット番号だけを表示する。ロット番号は最上段のFQマップ上側に1回だけ表示し、2段目と3段目には重複表示しない。一度に5ロットを表示し、全100ロットは横スクロールで移動する。FQマップは低い高さの概要表示とし、`meta_category`が`None`の場合は全項目、それ以外は選択カテゴリの`colname`だけを表示する。
 
-rawとstandardizedのParquetでは機台間で一意な45個の`colname`を保持する。一方、概要ヒートマップでは末尾の`_v1`、`_v2`、`_v3`を除いた15個の検査項目に統合して表示する。各FrameNoを担当するvisionは1台だけなので、この統合で値を混合せず、vision別の非担当フレームが作る階段状の欠損パターンを表示から除去できる。
+raw、standardized、FQマップのすべてで、末尾に`_v1`、`_v2`、`_v3`を持つ45個の一意な`colname`を維持する。全カテゴリ表示では3 visionの行をベース検査項目単位でまとめて目盛表示し、カテゴリを選択した場合は各colnameを個別表示する。セル選択時と詳細表示では常に完全なvision別colnameを示す。
 
-概要ヒートマップの下には、選択したセルの行に対応する検査項目について、`PositionX = 1～24`、`PositionY = 1～12`のフレームマップを次の3段で表示する。
+FQマップの下には、選択したセルの行に対応するvision別検査項目について、`PositionX = 1～24`、`PositionY = 1～12`のフレームマップを次の3段で表示する。
 
 1. NG率（Reds相当）
 2. `spec_position`または`spec_usage`の平均（RdBu_r相当）
 3. `spec_position`または`spec_usage`の母標準偏差（Purples相当）
 
-フレームマップは1ロット内の24フレームを製品座標ごとに集計し、上段ヒートマップと同じ横スクロール位置の5ロットを並べる。各製品セルの境界には白いグリッド線を表示する。上段3種類のどのヒートマップをクリックしても、選択枠とフレームマップ対象項目を同期する。
+フレームマップは1ロット内の24フレームを製品座標ごとに集計し、FQマップと同じ横スクロール位置の5ロットを並べる。各製品セルの境界には白いグリッド線を表示する。3種類のどのFQマップをクリックしても、ダイヤ型の選択マーカーとフレームマップ対象項目を同期する。選択ロットはフレームマップ上端の細いインディゴ線で控えめに示す。
 
-画面はライトテーマとし、3段のヒートマップ間にカード枠や区切り余白を設けない。
+画面はライトテーマとし、3段のFQマップ間にカード枠や区切り余白を設けない。
 
 不良は規格不適合、異常は過去の通常状態からの逸脱として定義し、それらは必ずしも一致しない。
 過去の通常状態は、対象ロットを含まない過去のNロットから計算する。

@@ -84,11 +84,7 @@ class QualityRepository:
         query = f"""
             SELECT
                 lot_number,
-                regexp_replace(
-                    colname,
-                    '_v[123]$',
-                    ''
-                ) AS colname,
+                colname,
                 PositionX,
                 PositionY,
                 count(*) AS total_count,
@@ -113,7 +109,7 @@ class QualityRepository:
               {lot_filter}
             GROUP BY
                 lot_number,
-                regexp_replace(colname, '_v[123]$', ''),
+                colname,
                 PositionX,
                 PositionY
         """

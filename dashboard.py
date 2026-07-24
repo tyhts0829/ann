@@ -12,7 +12,7 @@ os.environ.setdefault("QT_API", "pyside6")
 
 from PySide6 import QtWidgets
 
-from src.analysis.ng_rate_heatmap import NgRateHeatmapWidget
+from src.analysis.fq_map import FqMapWidget
 from src.standardized.quality_data import QualityRepository
 
 
@@ -33,8 +33,8 @@ class DashboardWindow(QtWidgets.QMainWindow):
         layout.setContentsMargins(12, 12, 12, 10)
         layout.setSpacing(10)
 
-        self.heatmap = NgRateHeatmapWidget(repository)
-        layout.addWidget(self.heatmap, stretch=1)
+        self.fq_map = FqMapWidget(repository)
+        layout.addWidget(self.fq_map, stretch=1)
         self.setStyleSheet(STYLESHEET)
 
 

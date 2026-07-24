@@ -1,5 +1,6 @@
-"""品質分析グラフのパッケージ。"""
+"""品質分析マップのパッケージ。"""
 
-from .ng_rate_heatmap import NgRateHeatmapWidget
+from .fq_map import FqMapWidget
+from .frame_map import FrameMapWidget
 
-__all__ = ["NgRateHeatmapWidget"]
+__all__ = ["FqMapWidget", "FrameMapWidget"]

@@ -157,7 +157,8 @@ MEASUREMENTS = (
     },
 )
 
-ROWS_PER_LOT = 24 * 24 * 12 * len(MEASUREMENTS)
+VISION_COUNT = 3
+ROWS_PER_LOT = 24 * 24 * 12 * VISION_COUNT * len(MEASUREMENTS)
 
 ANOMALY_DEFINITIONS = {
     24: {
@@ -464,13 +465,26 @@ def _perlin_lot_factors(n_lots: int, seed: int) -> np.ndarray:
 
 def _base_grid() -> dict[str, np.ndarray]:
     """1ロット内の製品座標。"""
-    frame = np.repeat(np.arange(1, 25, dtype=np.int16), 24 * 12)
-    position_x = np.tile(
+    physical_frame = np.repeat(
+        np.arange(1, 25, dtype=np.int16),
+        24 * 12,
+    )
+    physical_position_x = np.tile(
         np.repeat(np.arange(1, 25, dtype=np.int8), 12),
         24,
     )
-    position_y = np.tile(np.arange(1, 13, dtype=np.int8), 24 * 24)
-    vision_index = ((frame - 1) // 8).astype(np.int8)
+    physical_position_y = np.tile(
+        np.arange(1, 13, dtype=np.int8),
+        24 * 24,
+    )
+
+    frame = np.repeat(physical_frame, VISION_COUNT)
+    position_x = np.repeat(physical_position_x, VISION_COUNT)
+    position_y = np.repeat(physical_position_y, VISION_COUNT)
+    vision_index = np.tile(
+        np.arange(VISION_COUNT, dtype=np.int8),
+        physical_frame.size,
+    )
     vision = np.asarray(
         ["vision_1", "vision_2", "vision_3"],
         dtype=object,
@@ -825,6 +839,7 @@ def _generate_values(
         cluster = (
             np.exp(-0.5 * cluster_distance)
             * np.clip(1.0 + 0.25 * foreign_field, 0.6, 1.4)
+            * (vision_index == 2)
         )
         foreign_long += 0.36 * cluster
         foreign_short += 0.18 * cluster
@@ -894,18 +909,17 @@ def _schema(seed: int, n_lots: int) -> pa.Schema:
     metadata = {
         b"dataset": b"discrete_semiconductor_final_inspection",
         b"dataset_stage": b"raw",
-        b"dataset_version": b"2.0",
+        b"dataset_version": b"3.0",
         b"baseline_noise": b"fractal_perlin_3d",
         b"perlin_octaves": b"4",
         b"perlin_period": str(PERLIN_PERIOD).encode(),
         b"generator_seed": str(seed).encode(),
         b"lot_count": str(n_lots).encode(),
         b"rows_per_lot": str(ROWS_PER_LOT).encode(),
+        b"visions_per_product": str(VISION_COUNT).encode(),
         b"measurement_base_count": str(len(MEASUREMENTS)).encode(),
         b"unique_colname_count": str(len(MEASUREMENTS) * 3).encode(),
-        b"frame_to_vision": (
-            b"1-8:vision_1,9-16:vision_2,17-24:vision_3"
-        ),
+        b"vision_coverage": b"vision_1,vision_2,vision_3:FrameNo 1-24",
     }
     return pa.schema(
         [
@@ -1053,7 +1067,9 @@ def _write_manifest(
         "rows_per_lot": ROWS_PER_LOT,
         "frames_per_lot": 24,
         "products_per_frame": 24 * 12,
-        "measurements_per_product": len(MEASUREMENTS),
+        "visions_per_product": VISION_COUNT,
+        "measurements_per_vision": len(MEASUREMENTS),
+        "measurements_per_product": len(MEASUREMENTS) * VISION_COUNT,
         "unique_colname_count": len(MEASUREMENTS) * 3,
         "baseline_noise": {
             "type": "fractal_perlin_3d",
@@ -1073,10 +1089,10 @@ def _write_manifest(
             "vision_2": "_v2",
             "vision_3": "_v3",
         },
-        "frame_to_vision": {
-            "vision_1": [1, 8],
-            "vision_2": [9, 16],
-            "vision_3": [17, 24],
+        "vision_frame_coverage": {
+            "vision_1": [1, 24],
+            "vision_2": [1, 24],
+            "vision_3": [1, 24],
         },
         "known_synthetic_anomalies": anomalies,
     }

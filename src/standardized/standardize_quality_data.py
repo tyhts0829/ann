@@ -37,7 +37,7 @@ def _standardized_schema(
     metadata.update(
         {
             b"dataset_stage": b"standardized",
-            b"dataset_version": b"2.1",
+            b"dataset_version": b"3.1",
             b"source_file": input_path.name.encode(),
             b"spec_position_formula": SPEC_POSITION_FORMULA.encode(),
             b"spec_usage_formula": SPEC_USAGE_FORMULA.encode(),

@@ -11,73 +11,19 @@ import pandas as pd
 import pyqtgraph as pg
 from PySide6 import QtCore, QtGui, QtWidgets
 
+from src.analysis.frame_map import FrameMapWidget, VISIBLE_LOTS
+from src.analysis.map_palettes import MAP_DEFINITIONS, make_color_map
+from src.analysis.quality_columns import CATEGORY_ORDER, SPEC_ORDER
 from src.standardized.quality_data import QualityRepository
 
 
-BASE_COLNAMES = (
-    "Foreign_Length_Long",
-    "Foreign_Length_Short",
-    "Foreign_Size",
-    "Lead_Length_L",
-    "Lead_Length_R",
-    "Lead_Pitch",
-    "Work_Xw",
-    "Work_Yw",
-    "Work_Center_X",
-    "Work_Center_Y",
-    "Mark_Center_X",
-    "Mark_Center_Y",
-    "Defect_Length_Long",
-    "Defect_Length_Short",
-    "Defect_Size",
-)
-SPEC_ORDER = BASE_COLNAMES
-CATEGORY_ORDER = ("異物", "リード", "PKGサイズ", "標印", "欠陥")
 FRAME_NUMBERS = np.arange(1, 25)
-POSITION_X = np.arange(1, 25)
-POSITION_Y = np.arange(1, 13)
-VISIBLE_LOTS = 5
 VISIBLE_COLUMNS = len(FRAME_NUMBERS) * VISIBLE_LOTS
-
-REDS = (
-    "#fff5f0",
-    "#fee0d2",
-    "#fcbba1",
-    "#fc9272",
-    "#fb6a4a",
-    "#ef3b2c",
-    "#cb181d",
-    "#99000d",
-)
-RDBU_R = (
-    "#053061",
-    "#2166ac",
-    "#4393c3",
-    "#92c5de",
-    "#d1e5f0",
-    "#f7f7f7",
-    "#fddbc7",
-    "#f4a582",
-    "#d6604d",
-    "#b2182b",
-    "#67001f",
-)
-PURPLES = (
-    "#fcfbfd",
-    "#efedf5",
-    "#dadaeb",
-    "#bcbddc",
-    "#9e9ac8",
-    "#807dba",
-    "#6a51a3",
-    "#54278f",
-    "#3f007d",
-)
 
 
 @dataclass(frozen=True)
-class HeatmapData:
-    """3種類の品質ヒートマップ集計結果。"""
+class FqMapData:
+    """3種類のFQマップ集計結果。"""
 
     colnames: tuple[str, ...]
     categories: tuple[str, ...]
@@ -106,7 +52,7 @@ class HeatmapData:
     def lot_count(self) -> int:
         return len(self.lot_numbers)
 
-    def filter_category(self, category: str | None) -> HeatmapData:
+    def filter_category(self, category: str | None) -> FqMapData:
         """meta_categoryによる行抽出。"""
         if category is None:
             return self
@@ -114,7 +60,7 @@ class HeatmapData:
         row_indices = np.flatnonzero(
             np.asarray(self.categories, dtype=object) == category
         )
-        return HeatmapData(
+        return FqMapData(
             colnames=tuple(self.colnames[index] for index in row_indices),
             categories=tuple(
                 self.categories[index] for index in row_indices
@@ -130,24 +76,9 @@ class HeatmapData:
         )
 
 
-@dataclass(frozen=True)
-class FrameMapData:
-    """lot・検査項目別の製品座標マップ集計結果。"""
-
-    colnames: tuple[str, ...]
-    lot_numbers: tuple[str, ...]
-    ng_rates: np.ndarray
-    normalized_mean: np.ndarray
-    normalized_std: np.ndarray
-
-    def colname_index(self, colname: str) -> int:
-        """検査項目の配列位置。"""
-        return self.colnames.index(colname)
-
-
 @dataclass
-class HeatmapView:
-    """1種類のヒートマップ表示部品。"""
+class FqMapView:
+    """1種類のFQマップ表示部品。"""
 
     metric: str
     label: str
@@ -156,41 +87,22 @@ class HeatmapView:
     plot_item: pg.PlotItem
     image_item: pg.ImageItem
     color_bar: pg.ColorBarItem
-    selection_item: QtWidgets.QGraphicsRectItem
+    selection_item: pg.ScatterPlotItem
     separators: list[pg.InfiniteLine] = field(default_factory=list)
     mouse_proxy: pg.SignalProxy | None = None
 
 
-@dataclass
-class FrameMapRow:
-    """同一指標の表示中lot別フレームマップ行。"""
-
-    metric: str
-    label: str
-    widget: QtWidgets.QWidget
-    plot_widgets: list[pg.PlotWidget]
-    image_items: list[pg.ImageItem]
-    color_bar: pg.ColorBarItem
-    levels: tuple[float, float] = (0.0, 1.0)
-
-
-def build_heatmap_data(
+def build_fq_map_data(
     repository: QualityRepository,
     lot_numbers: tuple[str, ...] | None = None,
-) -> HeatmapData:
-    """FrameNo別の3種類のヒートマップデータ生成。"""
+) -> FqMapData:
+    """FrameNo別の3種類のFQマップデータ生成。"""
     if lot_numbers is None:
         lot_numbers = tuple(record[0] for record in repository.lots())
 
     frame = repository.ng_rate_by_frame(lot_numbers)
     if frame.empty:
         raise ValueError("対象データがありません。")
-    frame["colname"] = frame["colname"].str.replace(
-        r"_v[123]$",
-        "",
-        regex=True,
-    )
-
     available = set(frame["colname"])
     colnames = tuple(name for name in SPEC_ORDER if name in available)
     category_lookup = (
@@ -201,7 +113,7 @@ def build_heatmap_data(
     )
     categories = tuple(category_lookup[colname] for colname in colnames)
 
-    return HeatmapData(
+    return FqMapData(
         colnames=colnames,
         categories=categories,
         lot_numbers=lot_numbers,
@@ -249,43 +161,6 @@ def build_heatmap_data(
     )
 
 
-def build_frame_map_data(
-    repository: QualityRepository,
-    lot_numbers: tuple[str, ...] | None = None,
-) -> FrameMapData:
-    """PositionX・PositionY別の3種類のマップデータ生成。"""
-    if lot_numbers is None:
-        lot_numbers = tuple(record[0] for record in repository.lots())
-
-    frame = repository.metrics_by_colname_position(lot_numbers)
-    available = set(frame["colname"])
-    colnames = tuple(
-        colname for colname in BASE_COLNAMES if colname in available
-    )
-    return FrameMapData(
-        colnames=colnames,
-        lot_numbers=lot_numbers,
-        ng_rates=_position_matrices(
-            frame,
-            "ng_rate",
-            colnames,
-            lot_numbers,
-        ),
-        normalized_mean=_position_matrices(
-            frame,
-            "normalized_mean",
-            colnames,
-            lot_numbers,
-        ),
-        normalized_std=_position_matrices(
-            frame,
-            "normalized_std",
-            colnames,
-            lot_numbers,
-        ),
-    )
-
-
 def _matrix(
     frame: pd.DataFrame,
     value_column: str,
@@ -310,67 +185,20 @@ def _matrix(
     )
 
 
-def _position_matrices(
-    frame: pd.DataFrame,
-    value_column: str,
-    colnames: tuple[str, ...],
-    lot_numbers: tuple[str, ...],
-) -> np.ndarray:
-    """検査項目ごとのlot・製品座標行列。"""
-    index = pd.MultiIndex.from_product(
-        [lot_numbers, POSITION_Y, POSITION_X],
-        names=["lot_number", "PositionY", "PositionX"],
-    )
-    matrices = []
-    for colname in colnames:
-        subset = frame[frame["colname"] == colname]
-        matrix = (
-            subset.set_index(
-                ["lot_number", "PositionY", "PositionX"]
-            )[value_column]
-            .reindex(index)
-            .to_numpy(dtype=float)
-            .reshape(
-                len(lot_numbers),
-                len(POSITION_Y),
-                len(POSITION_X),
-            )
-        )
-        matrices.append(matrix)
-    return np.stack(matrices)
-
-
-def _make_color_map(colors: tuple[str, ...]) -> pg.ColorMap:
-    """16進色列からの連続カラーマップ。"""
-    rgb = np.asarray(
-        [pg.mkColor(color).getRgb()[:3] for color in colors],
-        dtype=np.ubyte,
-    )
-    return pg.ColorMap(
-        np.linspace(0.0, 1.0, len(colors)),
-        rgb,
-    )
-
-
-class NgRateHeatmapWidget(QtWidgets.QWidget):
-    """NG率・規格位置平均・標準偏差の3段ヒートマップ。"""
+class FqMapWidget(QtWidgets.QWidget):
+    """NG率・規格位置平均・標準偏差の3段FQマップ。"""
 
     def __init__(self, repository: QualityRepository) -> None:
         super().__init__()
         self.repository = repository
-        self.full_heatmap = build_heatmap_data(repository)
-        self.current_heatmap = self.full_heatmap
-        self.selected_colname = self.full_heatmap.colnames[0]
-        self.selected_column = len(self.full_heatmap.frame_numbers) - 1
-        self.frame_map_data = build_frame_map_data(
-            repository,
-            self.full_heatmap.lot_numbers,
-        )
-        self.heatmap_views: list[HeatmapView] = []
-        self.frame_map_rows: list[FrameMapRow] = []
+        self.full_data = build_fq_map_data(repository)
+        self.current_data = self.full_data
+        self.selected_colname = self.full_data.colnames[0]
+        self.selected_column = len(self.full_data.frame_numbers) - 1
+        self.views: list[FqMapView] = []
         self._build_ui()
         self._populate_categories()
-        self._render_heatmaps()
+        self._render_fq_maps()
 
     def _build_ui(self) -> None:
         layout = QtWidgets.QVBoxLayout(self)
@@ -436,46 +264,29 @@ class NgRateHeatmapWidget(QtWidgets.QWidget):
         plots_layout.setContentsMargins(0, 0, 0, 0)
         plots_layout.setSpacing(0)
 
-        definitions = (
-            ("ng_rates", "NG率 (%)", REDS),
-            (
-                "normalized_mean",
-                "規格位置・使用率 平均",
-                RDBU_R,
-            ),
-            (
-                "normalized_std",
-                "規格位置・使用率 std",
-                PURPLES,
-            ),
-        )
-        for metric, label, colors in definitions:
-            view = self._build_heatmap_view(
+        for metric, label, colors in MAP_DEFINITIONS:
+            view = self._build_fq_map_view(
                 metric,
                 label,
-                _make_color_map(colors),
+                make_color_map(colors),
             )
-            self.heatmap_views.append(view)
+            self.views.append(view)
             plots_layout.addWidget(view.card)
 
-        for metric, label, colors in definitions:
-            row = self._build_frame_map_row(
-                metric,
-                label,
-                _make_color_map(colors),
-            )
-            self.frame_map_rows.append(row)
-            plots_layout.addWidget(row.widget)
-
+        self.frame_map = FrameMapWidget(
+            self.repository,
+            self.full_data.lot_numbers,
+        )
+        plots_layout.addWidget(self.frame_map)
         self.vertical_scroll_area.setWidget(self.plots_container)
         return self.vertical_scroll_area
 
-    def _build_heatmap_view(
+    def _build_fq_map_view(
         self,
         metric: str,
         label: str,
         color_map: pg.ColorMap,
-    ) -> HeatmapView:
+    ) -> FqMapView:
         card = QtWidgets.QFrame()
         card.setObjectName("chartCard")
         layout = QtWidgets.QVBoxLayout(card)
@@ -488,13 +299,23 @@ class NgRateHeatmapWidget(QtWidgets.QWidget):
         plot_item.setMouseEnabled(x=False, y=False)
         plot_item.getViewBox().invertY(True)
         plot_item.getAxis("left").setWidth(205)
-        plot_item.getAxis("bottom").setHeight(28)
+        plot_item.hideAxis("bottom")
+        if metric == "ng_rates":
+            plot_item.showAxis("top")
+            plot_item.getAxis("top").setHeight(28)
+        else:
+            plot_item.hideAxis("top")
         plot_item.showGrid(x=False, y=True, alpha=0.18)
 
-        for axis_name in ("left", "bottom"):
+        axis_names = (
+            ("left", "top")
+            if metric == "ng_rates"
+            else ("left",)
+        )
+        for axis_name in axis_names:
             axis = plot_item.getAxis(axis_name)
             axis_font = QtGui.QFont()
-            axis_font.setPointSize(8)
+            axis_font.setPointSize(7)
             axis.setPen(pg.mkPen("#7a8492"))
             axis.setTextPen(pg.mkPen("#303846"))
             axis.setStyle(tickFont=axis_font, tickTextOffset=5)
@@ -503,10 +324,11 @@ class NgRateHeatmapWidget(QtWidgets.QWidget):
         image_item.setColorMap(color_map)
         plot_item.addItem(image_item)
 
-        selection_item = QtWidgets.QGraphicsRectItem()
-        selection_item.setPen(pg.mkPen("#00796b", width=2))
-        selection_item.setBrush(
-            QtGui.QBrush(QtCore.Qt.BrushStyle.NoBrush)
+        selection_item = pg.ScatterPlotItem(
+            symbol="d",
+            size=8,
+            pen=pg.mkPen("#ffffff", width=1.5),
+            brush=pg.mkBrush("#3157a4"),
         )
         selection_item.setZValue(30)
         plot_item.addItem(selection_item)
@@ -525,7 +347,7 @@ class NgRateHeatmapWidget(QtWidgets.QWidget):
         color_bar.axis.setLabel(color="#4b5563")
 
         layout.addWidget(plot_widget)
-        view = HeatmapView(
+        view = FqMapView(
             metric=metric,
             label=label,
             card=card,
@@ -538,110 +360,17 @@ class NgRateHeatmapWidget(QtWidgets.QWidget):
         view.mouse_proxy = pg.SignalProxy(
             plot_widget.scene().sigMouseMoved,
             rateLimit=30,
-            slot=lambda event, heatmap_view=view: (
-                self._show_hover_details(heatmap_view, event)
+            slot=lambda event, fq_view=view: (
+                self._show_hover_details(fq_view, event)
             ),
         )
         plot_widget.scene().sigMouseClicked.connect(
-            lambda event, heatmap_view=view: self._select_heatmap_cell(
-                heatmap_view,
+            lambda event, fq_view=view: self._select_fq_cell(
+                fq_view,
                 event,
             )
         )
         return view
-
-    def _build_frame_map_row(
-        self,
-        metric: str,
-        label: str,
-        color_map: pg.ColorMap,
-    ) -> FrameMapRow:
-        """表示中5 lotのPositionマップ行生成。"""
-        widget = QtWidgets.QWidget()
-        widget.setObjectName("frameMapRow")
-        widget.setFixedHeight(126)
-        layout = QtWidgets.QHBoxLayout(widget)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-
-        left_spacer = QtWidgets.QWidget()
-        left_spacer.setFixedWidth(205)
-        layout.addWidget(left_spacer)
-
-        plot_widgets = []
-        image_items = []
-        for _ in range(VISIBLE_LOTS):
-            plot_widget = pg.PlotWidget(background="#ffffff")
-            plot_item = plot_widget.getPlotItem()
-            plot_item.setMenuEnabled(False)
-            plot_item.hideButtons()
-            plot_item.hideAxis("left")
-            plot_item.hideAxis("bottom")
-            plot_item.setMouseEnabled(x=False, y=False)
-            plot_item.getViewBox().setAspectLocked(True)
-            plot_item.setXRange(0.5, 24.5, padding=0.0)
-            plot_item.setYRange(0.5, 12.5, padding=0.0)
-
-            image_item = pg.ImageItem(axisOrder="row-major")
-            image_item.setColorMap(color_map)
-            image_item.setRect(
-                QtCore.QRectF(
-                    0.5,
-                    0.5,
-                    float(len(POSITION_X)),
-                    float(len(POSITION_Y)),
-                )
-            )
-            plot_item.addItem(image_item)
-            grid_pen = pg.mkPen("#ffffff", width=0.7)
-            for x_position in np.arange(1.5, 24.5, 1.0):
-                line = pg.InfiniteLine(
-                    pos=x_position,
-                    angle=90,
-                    movable=False,
-                    pen=grid_pen,
-                )
-                line.setZValue(20)
-                plot_item.addItem(line)
-            for y_position in np.arange(1.5, 12.5, 1.0):
-                line = pg.InfiniteLine(
-                    pos=y_position,
-                    angle=0,
-                    movable=False,
-                    pen=grid_pen,
-                )
-                line.setZValue(20)
-                plot_item.addItem(line)
-            plot_widgets.append(plot_widget)
-            image_items.append(image_item)
-            layout.addWidget(plot_widget, stretch=1)
-
-        legend = pg.GraphicsLayoutWidget()
-        legend.setBackground("#ffffff")
-        legend.setFixedWidth(90)
-        color_bar = pg.ColorBarItem(
-            values=(0.0, 1.0),
-            width=18,
-            colorMap=color_map,
-            label=label,
-            interactive=False,
-            rounding=0.1,
-            pen=pg.mkPen("#5f6875"),
-        )
-        color_bar.axis.setTextPen(pg.mkPen("#303846"))
-        color_bar.axis.setLabel(color="#4b5563")
-        color_bar.setImageItem(image_items[0])
-        legend.addItem(color_bar)
-        layout.addWidget(legend)
-
-        return FrameMapRow(
-            metric=metric,
-            label=label,
-            widget=widget,
-            plot_widgets=plot_widgets,
-            image_items=image_items,
-            color_bar=color_bar,
-        )
 
     def _build_horizontal_navigation(self) -> QtWidgets.QLayout:
         navigation = QtWidgets.QHBoxLayout()
@@ -660,7 +389,7 @@ class NgRateHeatmapWidget(QtWidgets.QWidget):
         )
         self.horizontal_scrollbar.setObjectName("heatmapScrollBar")
         self.horizontal_scrollbar.valueChanged.connect(
-            self._scroll_heatmaps
+            self._scroll_fq_maps
         )
 
         self.latest_button = QtWidgets.QToolButton()
@@ -697,20 +426,20 @@ class NgRateHeatmapWidget(QtWidgets.QWidget):
     def _populate_categories(self) -> None:
         blocker = QtCore.QSignalBlocker(self.category_combo)
         self.category_combo.addItem("None", None)
-        available = set(self.full_heatmap.categories)
+        available = set(self.full_data.categories)
         for category in CATEGORY_ORDER:
             if category in available:
                 self.category_combo.addItem(category, category)
         del blocker
         self.category_combo.currentIndexChanged.connect(
-            self._render_heatmaps
+            self._render_fq_maps
         )
 
     @QtCore.Slot()
-    def _render_heatmaps(self) -> None:
+    def _render_fq_maps(self) -> None:
         category = self.category_combo.currentData()
-        data = self.full_heatmap.filter_category(category)
-        self.current_heatmap = data
+        data = self.full_data.filter_category(category)
+        self.current_data = data
         if self.selected_colname not in data.colnames:
             self.selected_colname = data.colnames[0]
 
@@ -719,12 +448,7 @@ class NgRateHeatmapWidget(QtWidgets.QWidget):
             minimum=1.0,
         )
         mean_abs_max = self._nice_upper(
-            float(
-                np.nanpercentile(
-                    np.abs(data.normalized_mean),
-                    99.5,
-                )
-            ),
+            float(np.nanpercentile(np.abs(data.normalized_mean), 99.5)),
             minimum=0.1,
         )
         std_max = self._nice_upper(
@@ -743,7 +467,7 @@ class NgRateHeatmapWidget(QtWidgets.QWidget):
             ),
         }
 
-        for view in self.heatmap_views:
+        for view in self.views:
             matrix, levels = render_specs[view.metric]
             view.image_item.setImage(
                 matrix,
@@ -760,12 +484,7 @@ class NgRateHeatmapWidget(QtWidgets.QWidget):
             )
             view.color_bar.setLevels(levels)
             view.plot_item.getAxis("left").setTicks(
-                [
-                    [
-                        (row, colname)
-                        for row, colname in enumerate(data.colnames)
-                    ]
-                ]
+                [self._colname_ticks(data)]
             )
             view.plot_item.setYRange(
                 -0.5,
@@ -775,7 +494,7 @@ class NgRateHeatmapWidget(QtWidgets.QWidget):
             self._update_x_axis(view, data)
             self._draw_lot_separators(view, data)
 
-        self._update_selection_items()
+        self._update_selection_markers()
         self._update_plot_heights(len(data.colnames))
         self._update_summary(
             data,
@@ -784,19 +503,43 @@ class NgRateHeatmapWidget(QtWidgets.QWidget):
             mean_abs_max,
             std_max,
         )
-        self._configure_frame_map_rows()
         self._configure_horizontal_scrollbar(data)
         self.vertical_scroll_area.verticalScrollBar().setValue(0)
 
     def _update_plot_heights(self, row_count: int) -> None:
-        height = max(260, 40 + row_count * 16)
-        for view in self.heatmap_views:
-            view.card.setFixedHeight(height)
+        if row_count > 18:
+            plot_height = 210
+        else:
+            plot_height = max(145, 30 + row_count * 12)
+        for view in self.views:
+            top_axis_height = 28 if view.metric == "ng_rates" else 0
+            view.card.setFixedHeight(plot_height + top_axis_height)
         self.plots_container.adjustSize()
+
+    @staticmethod
+    def _colname_ticks(data: FqMapData) -> list[tuple[float, str]]:
+        """表示密度に応じたcolname目盛。"""
+        if len(data.colnames) <= 18:
+            return [
+                (float(row), colname)
+                for row, colname in enumerate(data.colnames)
+            ]
+
+        grouped_rows: dict[str, list[int]] = {}
+        for row, colname in enumerate(data.colnames):
+            base_colname = colname.rsplit("_v", maxsplit=1)[0]
+            grouped_rows.setdefault(base_colname, []).append(row)
+        return [
+            (
+                float(np.mean(rows)),
+                f"{base_colname}  ·  _v1/_v2/_v3",
+            )
+            for base_colname, rows in grouped_rows.items()
+        ]
 
     def _configure_horizontal_scrollbar(
         self,
-        data: HeatmapData,
+        data: FqMapData,
     ) -> None:
         maximum = max(0, data.lot_count - VISIBLE_LOTS)
         blocker = QtCore.QSignalBlocker(self.horizontal_scrollbar)
@@ -805,20 +548,17 @@ class NgRateHeatmapWidget(QtWidgets.QWidget):
         self.horizontal_scrollbar.setPageStep(VISIBLE_LOTS)
         self.horizontal_scrollbar.setValue(maximum)
         del blocker
-        self._scroll_heatmaps(maximum)
+        self._scroll_fq_maps(maximum)
 
     @QtCore.Slot(int)
-    def _scroll_heatmaps(self, first_lot: int) -> None:
-        data = self.current_heatmap
-        if data is None:
-            return
-
+    def _scroll_fq_maps(self, first_lot: int) -> None:
+        data = self.current_data
         first_column = first_lot * len(FRAME_NUMBERS)
         last_column = min(
             first_column + VISIBLE_COLUMNS,
             len(data.frame_numbers),
         )
-        for view in self.heatmap_views:
+        for view in self.views:
             view.plot_item.setXRange(
                 first_column - 0.5,
                 last_column - 0.5,
@@ -829,88 +569,18 @@ class NgRateHeatmapWidget(QtWidgets.QWidget):
         self.latest_button.setEnabled(
             first_lot < self.horizontal_scrollbar.maximum()
         )
-        self._render_frame_maps(first_lot)
+        self.frame_map.set_context(
+            self.selected_colname,
+            first_lot,
+            self.selected_column // len(FRAME_NUMBERS),
+        )
 
-    def _configure_frame_map_rows(
+    def _select_fq_cell(
         self,
-    ) -> None:
-        """選択検査項目のフレームマップ色範囲設定。"""
-        colname_index = self.frame_map_data.colname_index(
-            self.selected_colname
-        )
-        ng_rates = self.frame_map_data.ng_rates[colname_index]
-        normalized_mean = self.frame_map_data.normalized_mean[
-            colname_index
-        ]
-        normalized_std = self.frame_map_data.normalized_std[
-            colname_index
-        ]
-        ng_max = self._nice_upper(
-            float(np.nanpercentile(ng_rates, 99.5)),
-            minimum=1.0,
-        )
-        mean_abs_max = self._nice_upper(
-            float(
-                np.nanpercentile(
-                    np.abs(normalized_mean),
-                    99.5,
-                )
-            ),
-            minimum=0.1,
-        )
-        std_max = self._nice_upper(
-            float(np.nanpercentile(normalized_std, 99.5)),
-            minimum=0.1,
-        )
-        levels = {
-            "ng_rates": (0.0, ng_max),
-            "normalized_mean": (-mean_abs_max, mean_abs_max),
-            "normalized_std": (0.0, std_max),
-        }
-        for row in self.frame_map_rows:
-            row.levels = levels[row.metric]
-            row.color_bar.setLevels(row.levels)
-
-    def _render_frame_maps(self, first_lot: int) -> None:
-        """横スクロール位置に対応する5 lotのマップ表示。"""
-        colname_index = self.frame_map_data.colname_index(
-            self.selected_colname
-        )
-        selected_lot = self.selected_column // len(FRAME_NUMBERS)
-        for row in self.frame_map_rows:
-            matrices = getattr(self.frame_map_data, row.metric)[
-                colname_index
-            ]
-            for offset, (plot_widget, image_item) in enumerate(
-                zip(row.plot_widgets, row.image_items)
-            ):
-                lot_index = first_lot + offset
-                image_item.setImage(
-                    matrices[lot_index],
-                    autoLevels=False,
-                    levels=row.levels,
-                )
-                image_item.setRect(
-                    QtCore.QRectF(
-                        0.5,
-                        0.5,
-                        float(len(POSITION_X)),
-                        float(len(POSITION_Y)),
-                    )
-                )
-                border = (
-                    pg.mkPen("#00796b", width=2)
-                    if lot_index == selected_lot
-                    else None
-                )
-                plot_widget.getPlotItem().getViewBox().setBorder(border)
-
-    def _select_heatmap_cell(
-        self,
-        view: HeatmapView,
+        view: FqMapView,
         event: object,
     ) -> None:
-        """クリックしたヒートマップセルの選択。"""
+        """クリックしたFQマップセルの選択。"""
         scene_position = event.scenePos()
         if not view.plot_widget.sceneBoundingRect().contains(
             scene_position
@@ -919,7 +589,7 @@ class NgRateHeatmapWidget(QtWidgets.QWidget):
         point = view.plot_item.getViewBox().mapSceneToView(scene_position)
         column = round(point.x())
         row = round(point.y())
-        data = self.current_heatmap
+        data = self.current_data
         if not (
             0 <= column < len(data.frame_numbers)
             and 0 <= row < len(data.colnames)
@@ -928,32 +598,34 @@ class NgRateHeatmapWidget(QtWidgets.QWidget):
 
         self.selected_colname = data.colnames[row]
         self.selected_column = column
-        self._update_selection_items()
-        self._configure_frame_map_rows()
-        self._render_frame_maps(self.horizontal_scrollbar.value())
+        self._update_selection_markers()
+        self.frame_map.set_context(
+            self.selected_colname,
+            self.horizontal_scrollbar.value(),
+            self.selected_column // len(FRAME_NUMBERS),
+        )
         self._update_scope_label(
             data,
             self.category_combo.currentData(),
         )
 
-    def _update_selection_items(self) -> None:
-        """3段ヒートマップの選択枠同期。"""
-        data = self.current_heatmap
+    def _update_selection_markers(self) -> None:
+        """3段FQマップの選択マーカー同期。"""
+        data = self.current_data
         row = data.colnames.index(self.selected_colname)
-        rectangle = QtCore.QRectF(
-            self.selected_column - 0.5,
-            row - 0.5,
-            1.0,
-            1.0,
-        )
-        for view in self.heatmap_views:
-            view.selection_item.setRect(rectangle)
+        for view in self.views:
+            view.selection_item.setData(
+                x=[float(self.selected_column)],
+                y=[float(row)],
+            )
 
     def _update_x_axis(
         self,
-        view: HeatmapView,
-        data: HeatmapData,
+        view: FqMapView,
+        data: FqMapData,
     ) -> None:
+        if view.metric != "ng_rates":
+            return
         lot_ticks = [
             (
                 lot_index * len(FRAME_NUMBERS)
@@ -962,12 +634,12 @@ class NgRateHeatmapWidget(QtWidgets.QWidget):
             )
             for lot_index, lot_number in enumerate(data.lot_numbers)
         ]
-        view.plot_item.getAxis("bottom").setTicks([lot_ticks])
+        view.plot_item.getAxis("top").setTicks([lot_ticks])
 
     def _draw_lot_separators(
         self,
-        view: HeatmapView,
-        data: HeatmapData,
+        view: FqMapView,
+        data: FqMapData,
     ) -> None:
         for separator in view.separators:
             view.plot_item.removeItem(separator)
@@ -986,7 +658,7 @@ class NgRateHeatmapWidget(QtWidgets.QWidget):
 
     def _update_summary(
         self,
-        data: HeatmapData,
+        data: FqMapData,
         category: str | None,
         ng_max: float,
         mean_abs_max: float,
@@ -1005,20 +677,23 @@ class NgRateHeatmapWidget(QtWidgets.QWidget):
 
     def _update_scope_label(
         self,
-        data: HeatmapData,
+        data: FqMapData,
         category: str | None,
     ) -> None:
         """表示範囲と選択検査項目の要約。"""
         category_text = category if category is not None else "全カテゴリ"
+        lot_number = data.column_lots[self.selected_column]
+        frame_number = int(data.frame_numbers[self.selected_column])
         self.scope_label.setText(
             f"{category_text}  |  {len(data.colnames)}項目  |  "
             f"{data.total_measurements:,}測定  |  "
-            f"選択 {self.selected_colname}"
+            f"選択 {lot_number} / F{frame_number:02d} / "
+            f"{self.selected_colname}"
         )
 
     def _show_hover_details(
         self,
-        view: HeatmapView,
+        view: FqMapView,
         event: tuple[QtCore.QPointF],
     ) -> None:
         scene_position = event[0]
@@ -1031,7 +706,7 @@ class NgRateHeatmapWidget(QtWidgets.QWidget):
         point = view.plot_item.getViewBox().mapSceneToView(scene_position)
         column = round(point.x())
         row = round(point.y())
-        data = self.current_heatmap
+        data = self.current_data
         if not (
             0 <= column < len(data.frame_numbers)
             and 0 <= row < len(data.colnames)
@@ -1069,10 +744,8 @@ class NgRateHeatmapWidget(QtWidgets.QWidget):
         )
 
     @staticmethod
-    def _nice_upper(
-        max_value: float,
-        minimum: float,
-    ) -> float:
+    def _nice_upper(max_value: float, minimum: float) -> float:
+        """色範囲上限の切り上げ。"""
         if max_value <= 0.0:
             return minimum
         magnitude = 10.0 ** math.floor(math.log10(max_value))
