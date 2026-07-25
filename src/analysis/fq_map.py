@@ -37,6 +37,8 @@ FQ_MAP_SECTION_HEIGHT = DASHBOARD_CONFIG.fqmap_height
 FMAP_SECTION_HEIGHT = DASHBOARD_CONFIG.fmap_height
 KDE_SECTION_HEIGHT = DASHBOARD_CONFIG.kde_height
 FQ_MAP_PLOT_HEIGHT = DASHBOARD_CONFIG.fqmap_plot_height
+FQ_MAP_SEPARATOR_HEIGHT = 6
+DETAIL_DIVIDER_HEIGHT = 1
 
 
 @dataclass(frozen=True)
@@ -259,6 +261,7 @@ class FqMapWidget(QtWidgets.QWidget):
         self.current_data = self.full_data
         self.selected_colname = self.full_data.colnames[0]
         self.views: list[FqMapView] = []
+        self.fq_map_separators: list[QtWidgets.QFrame] = []
         self._build_ui()
         self._populate_filters()
         self._render_fq_maps()
@@ -270,9 +273,9 @@ class FqMapWidget(QtWidgets.QWidget):
         self.fq_map_section = self._build_fq_map_section()
         self.fmap_section = self._build_fmap_section()
         self.kde_section = self._build_kde_section()
+        self.detail_section = self._build_detail_section()
         layout.addWidget(self.fq_map_section)
-        layout.addWidget(self.fmap_section)
-        layout.addWidget(self.kde_section)
+        layout.addWidget(self.detail_section)
         layout.addLayout(self._build_horizontal_navigation())
         layout.addWidget(self._build_footer())
         layout.addStretch()
@@ -287,6 +290,8 @@ class FqMapWidget(QtWidgets.QWidget):
 
         fq_map_title = QtWidgets.QLabel("FQmap")
         fq_map_title.setObjectName("mapSectionTitle")
+        overview_badge = QtWidgets.QLabel("全検査項目の俯瞰")
+        overview_badge.setObjectName("overviewBadge")
 
         lot_label = QtWidgets.QLabel("対象")
         lot_label.setObjectName("fieldLabel")
@@ -314,6 +319,7 @@ class FqMapWidget(QtWidgets.QWidget):
         self.ng_rate_label.setObjectName("ngRateLabel")
 
         layout.addWidget(fq_map_title)
+        layout.addWidget(overview_badge)
         layout.addWidget(lot_label)
         layout.addWidget(self.all_lots_label)
         layout.addSpacing(8)
@@ -362,7 +368,9 @@ class FqMapWidget(QtWidgets.QWidget):
         plots_layout.setSpacing(0)
         plots_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
 
-        for metric, label, colors in MAP_DEFINITIONS:
+        for index, (metric, label, colors) in enumerate(
+            MAP_DEFINITIONS
+        ):
             view = self._build_fq_map_view(
                 metric,
                 label,
@@ -370,6 +378,12 @@ class FqMapWidget(QtWidgets.QWidget):
             )
             self.views.append(view)
             plots_layout.addWidget(view.card)
+            if index < len(MAP_DEFINITIONS) - 1:
+                separator = QtWidgets.QFrame()
+                separator.setObjectName("fqMapSeparator")
+                separator.setFixedHeight(FQ_MAP_SEPARATOR_HEIGHT)
+                self.fq_map_separators.append(separator)
+                plots_layout.addWidget(separator)
 
         self.vertical_scroll_area.setWidget(self.plots_container)
         return self.vertical_scroll_area
@@ -377,7 +391,7 @@ class FqMapWidget(QtWidgets.QWidget):
     def _build_fmap_section(self) -> QtWidgets.QWidget:
         """固定高のFmapセクション。"""
         section = QtWidgets.QFrame()
-        section.setObjectName("mapCard")
+        section.setObjectName("detailSubsection")
         section.setFixedHeight(FMAP_SECTION_HEIGHT)
         layout = QtWidgets.QVBoxLayout(section)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -395,12 +409,34 @@ class FqMapWidget(QtWidgets.QWidget):
     def _build_kde_section(self) -> QtWidgets.QWidget:
         """固定高のKDEセクション。"""
         section = QtWidgets.QFrame()
-        section.setObjectName("mapCard")
+        section.setObjectName("detailSubsection")
         section.setFixedHeight(KDE_SECTION_HEIGHT)
         layout = QtWidgets.QVBoxLayout(section)
         layout.setContentsMargins(0, 0, 0, 0)
         self.kde = KdeWidget(self.kde_data)
         layout.addWidget(self.kde)
+        return section
+
+    def _build_detail_section(self) -> QtWidgets.QWidget:
+        """選択項目の詳細セクション。"""
+        section = QtWidgets.QFrame()
+        section.setObjectName("detailGroup")
+        section.setFixedHeight(
+            FMAP_SECTION_HEIGHT
+            + KDE_SECTION_HEIGHT
+            + DETAIL_DIVIDER_HEIGHT
+            + 2
+        )
+        layout = QtWidgets.QVBoxLayout(section)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(self.fmap_section)
+
+        self.detail_divider = QtWidgets.QFrame()
+        self.detail_divider.setObjectName("detailDivider")
+        self.detail_divider.setFixedHeight(DETAIL_DIVIDER_HEIGHT)
+        layout.addWidget(self.detail_divider)
+        layout.addWidget(self.kde_section)
         return section
 
     def _build_fq_map_view(
@@ -828,14 +864,13 @@ class FqMapWidget(QtWidgets.QWidget):
         category: str | None,
         vision: str | None,
     ) -> None:
-        """表示範囲と選択検査項目の要約。"""
+        """表示範囲の要約。"""
         category_text = category if category is not None else "全カテゴリ"
         vision_text = vision if vision is not None else "全vision"
         self.scope_label.setText(
             f"{category_text} / {vision_text}  |  "
             f"{len(data.colnames)}項目  |  "
-            f"{data.total_measurements:,}測定  |  "
-            f"選択項目 {self.selected_colname}"
+            f"{data.total_measurements:,}測定"
         )
 
     def _show_hover_details(

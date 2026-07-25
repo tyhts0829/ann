@@ -11,7 +11,9 @@ from PySide6 import QtCore, QtWidgets
 
 from dashboard import DashboardWindow, STYLESHEET
 from src.analysis.fq_map import (
+    DETAIL_DIVIDER_HEIGHT,
     FMAP_SECTION_HEIGHT,
+    FQ_MAP_SEPARATOR_HEIGHT,
     FQ_MAP_SECTION_HEIGHT,
     KDE_SECTION_HEIGHT,
     build_fq_map_data,
@@ -339,6 +341,22 @@ def test_dashboard_window(qtbot, repository: QualityRepository) -> None:
     assert len(fq_map.views) == 3
     assert len(fq_map.frame_map.rows) == 3
     assert fq_map.plots_container.layout().spacing() == 0
+    assert len(fq_map.fq_map_separators) == 2
+    assert all(
+        separator.height() == FQ_MAP_SEPARATOR_HEIGHT
+        for separator in fq_map.fq_map_separators
+    )
+    fq_map_parts = [
+        fq_map.views[0].card,
+        fq_map.fq_map_separators[0],
+        fq_map.views[1].card,
+        fq_map.fq_map_separators[1],
+        fq_map.views[2].card,
+    ]
+    assert all(
+        current.geometry().top() == previous.geometry().bottom() + 1
+        for previous, current in zip(fq_map_parts, fq_map_parts[1:])
+    )
     assert fq_map.fq_map_section.height() == FQ_MAP_SECTION_HEIGHT
     assert fq_map.fmap_section.height() == FMAP_SECTION_HEIGHT
     assert fq_map.fq_map_section.isAncestorOf(fq_map.toolbar)
@@ -348,12 +366,41 @@ def test_dashboard_window(qtbot, repository: QualityRepository) -> None:
             for frame in fq_map.findChildren(QtWidgets.QFrame)
             if frame.objectName() == "mapCard"
         ]
-    ) == 3
+    ) == 1
+    detail_groups = [
+        frame
+        for frame in fq_map.findChildren(QtWidgets.QFrame)
+        if frame.objectName() == "detailGroup"
+    ]
+    assert detail_groups == [fq_map.detail_section]
+    assert fq_map.detail_section.isAncestorOf(fq_map.fmap_section)
+    assert fq_map.detail_section.isAncestorOf(fq_map.kde_section)
+    assert not fq_map.fq_map_section.isAncestorOf(
+        fq_map.detail_section
+    )
+    assert fq_map.detail_divider.height() == DETAIL_DIVIDER_HEIGHT
+    assert fq_map.detail_section.contentsRect().contains(
+        fq_map.fmap_section.geometry()
+    )
+    assert fq_map.detail_section.contentsRect().contains(
+        fq_map.kde_section.geometry()
+    )
     assert fq_map.kde_section.height() == KDE_SECTION_HEIGHT
     assert fq_map.kde.current_colname == "Foreign_Length_Long_v1"
-    assert fq_map.kde.selection_label.text() == (
-        "Foreign_Length_Long_v1"
-    )
+    assert fq_map.findChild(
+        QtWidgets.QLabel,
+        "overviewBadge",
+    ).text() == "全検査項目の俯瞰"
+    assert fq_map.findChild(
+        QtWidgets.QLabel,
+        "detailBadge",
+    ).text() == "選択項目の詳細"
+    assert len(
+        fq_map.detail_section.findChildren(
+            QtWidgets.QLabel,
+            "frameMapSelectionLabel",
+        )
+    ) == 1
     assert len(fq_map.kde.plot_widgets) == VISIBLE_LOTS
     assert fq_map.kde.current_lot_numbers == (
         fq_map.full_data.lot_numbers[-VISIBLE_LOTS:]
@@ -387,9 +434,9 @@ def test_dashboard_window(qtbot, repository: QualityRepository) -> None:
         for plot_item in fq_map.kde.plot_items
         for item in plot_item.items
     )
-    assert (
-        f"表示中 {VISIBLE_LOTS} lot"
-        in fq_map.kde.summary_label.text()
+    assert all(
+        not plot_item.titleLabel.isVisible()
+        for plot_item in fq_map.kde.plot_items
     )
     assert "各 6,912測定" in fq_map.kde.summary_label.text()
     assert "最良値 0" in fq_map.kde.summary_label.text()
@@ -438,6 +485,38 @@ def test_dashboard_window(qtbot, repository: QualityRepository) -> None:
     )
     assert fmap_lot_width == pytest.approx(fq_lot_width, rel=0.01)
     assert kde_lot_width == pytest.approx(fmap_lot_width, rel=0.01)
+    fq_plot_x = (
+        fq_map.views[0].plot_widget.mapToGlobal(
+            QtCore.QPoint(0, 0)
+        ).x()
+        + fq_map.views[0]
+        .plot_item.getViewBox()
+        .sceneBoundingRect()
+        .left()
+    )
+    fmap_plot_x = (
+        fq_map.frame_map.rows[0]
+        .plot_widgets[0]
+        .mapToGlobal(QtCore.QPoint(0, 0))
+        .x()
+        + fq_map.frame_map.rows[0]
+        .plot_widgets[0]
+        .getPlotItem()
+        .getViewBox()
+        .sceneBoundingRect()
+        .left()
+    )
+    kde_plot_x = (
+        fq_map.kde.plot_widgets[0]
+        .mapToGlobal(QtCore.QPoint(0, 0))
+        .x()
+        + fq_map.kde.plot_items[0]
+        .getViewBox()
+        .sceneBoundingRect()
+        .left()
+    )
+    assert fmap_plot_x == pytest.approx(fq_plot_x, abs=2.0)
+    assert kde_plot_x == pytest.approx(fmap_plot_x, abs=2.0)
     grid_lines = [
         item
         for item in fq_map.frame_map.rows[0]
@@ -493,10 +572,6 @@ def test_dashboard_window(qtbot, repository: QualityRepository) -> None:
         fq_map.vision_combo.itemData(index)
         for index in range(fq_map.vision_combo.count())
     ] == [None, "vision_1", "vision_2", "vision_3"]
-    assert fq_map.findChild(
-        QtWidgets.QLabel,
-        "frameMapContextCaption",
-    ).text() == "選択中の検査項目"
     assert fq_map.fmap_selection_label.text() == (
         "Foreign_Length_Long_v1"
     )
@@ -562,7 +637,6 @@ def test_dashboard_window(qtbot, repository: QualityRepository) -> None:
     )
     assert fq_map.fmap_selection_label.text().endswith("Work_Xw_v2")
     assert fq_map.kde.current_colname == "Work_Xw_v2"
-    assert fq_map.kde.selection_label.text() == "Work_Xw_v2"
     assert all(line.isVisible() for line in fq_map.kde.lower_lines)
     assert all(line.isVisible() for line in fq_map.kde.center_lines)
     assert all(line.isVisible() for line in fq_map.kde.upper_lines)

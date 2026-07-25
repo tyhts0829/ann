@@ -241,8 +241,9 @@ class FrameMapWidget(QtWidgets.QWidget):
         if metric == "ng_rates":
             title = QtWidgets.QLabel("Fmap")
             title.setObjectName("mapSectionTitle")
-            caption = QtWidgets.QLabel("選択中の検査項目")
-            caption.setObjectName("frameMapContextCaption")
+            title.setProperty("sectionRole", "detail")
+            caption = QtWidgets.QLabel("選択項目の詳細")
+            caption.setObjectName("detailBadge")
             layout.addWidget(title)
             layout.addWidget(caption)
             layout.addWidget(self.selection_label)

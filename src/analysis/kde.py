@@ -228,7 +228,7 @@ class KdeWidget(QtWidgets.QWidget):
         layout.addWidget(right_spacer)
 
     def _build_context_panel(self) -> QtWidgets.QWidget:
-        """選択項目と規格値の表示。"""
+        """分布種別と規格値の表示。"""
         panel = QtWidgets.QWidget()
         panel.setObjectName("kdeLabelPanel")
         panel.setFixedWidth(DASHBOARD_CONFIG.left_label_width)
@@ -238,18 +238,15 @@ class KdeWidget(QtWidgets.QWidget):
 
         title = QtWidgets.QLabel("KDE")
         title.setObjectName("mapSectionTitle")
-        caption = QtWidgets.QLabel("選択中の検査項目")
+        title.setProperty("sectionRole", "detail")
+        caption = QtWidgets.QLabel("lot別の測定値分布")
         caption.setObjectName("kdeContextCaption")
-        self.selection_label = QtWidgets.QLabel()
-        self.selection_label.setObjectName("kdeSelectionLabel")
-        self.selection_label.setWordWrap(True)
         self.summary_label = QtWidgets.QLabel()
         self.summary_label.setObjectName("kdeSummaryLabel")
         self.summary_label.setWordWrap(True)
 
         layout.addWidget(title)
         layout.addWidget(caption)
-        layout.addWidget(self.selection_label)
         layout.addSpacing(5)
         layout.addWidget(self.summary_label)
         layout.addStretch()
@@ -305,11 +302,6 @@ class KdeWidget(QtWidgets.QWidget):
         for offset, plot_item in enumerate(self.plot_items):
             density = visible_densities[offset]
             self.curve_items[offset].setData(x_values, density)
-            plot_item.setTitle(
-                self.current_lot_numbers[offset],
-                color="#596579",
-                size="7pt",
-            )
             plot_item.setXRange(
                 display_min,
                 display_max,
@@ -329,11 +321,7 @@ class KdeWidget(QtWidgets.QWidget):
             self.data.in_range_counts[row, first_lot:last_lot]
             / visible_counts
         )
-        self.selection_label.setText(colname)
-        lines = [
-            f"表示中 {len(self.current_lot_numbers)} lot",
-            f"各 {sample_count:,}測定",
-        ]
+        lines = [f"各 {sample_count:,}測定"]
         if np.isfinite(center):
             lines.extend(
                 [

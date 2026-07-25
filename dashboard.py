@@ -243,6 +243,22 @@ QFrame#mapCard {
     background: #ffffff;
     border: 1px solid #d5dbe3;
 }
+QFrame#detailGroup {
+    background: #ffffff;
+    border: 1px solid #aebdce;
+}
+QFrame#detailSubsection {
+    background: #ffffff;
+    border: none;
+}
+QFrame#detailDivider {
+    background: #c8d2de;
+    border: none;
+}
+QFrame#fqMapSeparator {
+    background: #eef1f4;
+    border: none;
+}
 QWidget#toolbarCard {
     background: #ffffff;
     border: none;
@@ -257,12 +273,30 @@ QLabel#mapSectionTitle {
     font-size: 16px;
     font-weight: 700;
 }
-QWidget#frameMapLabelPanel {
-    background: #ffffff;
+QLabel#mapSectionTitle[sectionRole="detail"] {
+    color: #294d91;
 }
-QLabel#frameMapContextCaption {
-    color: #667080;
+QLabel#overviewBadge {
+    color: #596579;
+    background: #eef1f4;
+    border: 1px solid #d5dbe3;
+    padding: 2px 6px;
     font-size: 10px;
+    font-weight: 600;
+}
+QWidget#frameMapLabelPanel,
+QWidget#kdeLabelPanel {
+    background: #f2f6fb;
+    border-left: 4px solid #3157a4;
+    border-right: 1px solid #d3deeb;
+}
+QLabel#detailBadge {
+    color: #294d91;
+    background: #eaf0f8;
+    border: 1px solid #b9c7d9;
+    padding: 2px 6px;
+    font-size: 10px;
+    font-weight: 700;
 }
 QLabel#frameMapSelectionLabel {
     color: #294d91;
@@ -273,17 +307,9 @@ QLabel#frameMapMetricLabel {
     color: #667080;
     font-size: 11px;
 }
-QWidget#kdeLabelPanel {
-    background: #ffffff;
-}
 QLabel#kdeContextCaption {
     color: #667080;
     font-size: 10px;
-}
-QLabel#kdeSelectionLabel {
-    color: #294d91;
-    font-size: 11px;
-    font-weight: 700;
 }
 QLabel#kdeSummaryLabel {
     color: #667080;
