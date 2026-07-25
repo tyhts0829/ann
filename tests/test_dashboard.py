@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import duckdb
 import numpy as np
 import pyarrow.parquet as pq
 import pyqtgraph as pg
@@ -25,6 +26,13 @@ from src.dashboard_config import (
     CONFIG_PATH,
     DASHBOARD_CONFIG,
     load_dashboard_config,
+)
+from src.raw.generate_quality_data import (
+    DEFAULT_SEED,
+    MEASUREMENTS,
+    _base_grid,
+    _generate_values,
+    _perlin_lot_factors,
 )
 from src.standardized.quality_data import QualityRepository
 
@@ -151,6 +159,41 @@ def test_raw_and_standardized_spec_columns() -> None:
     assert frame.loc[one_sided, "spec_position"].isna().all()
 
 
+@pytest.mark.parametrize("path", [RAW_DATA_PATH, DATA_PATH])
+def test_foreign_and_defect_values_are_nonnegative(path: Path) -> None:
+    with duckdb.connect() as connection:
+        minimum, negative_count = connection.execute(
+            """
+                SELECT min(value), count_if(value < 0.0)
+                FROM read_parquet(?)
+                WHERE meta_category IN ('異物', '欠陥')
+            """,
+            [str(path)],
+        ).fetchone()
+
+    assert minimum == 0.0
+    assert negative_count == 0
+
+
+def test_generator_keeps_foreign_and_defect_nonnegative() -> None:
+    grid = _base_grid()
+    lot_factors = _perlin_lot_factors(100, DEFAULT_SEED)
+    columns = [
+        index
+        for index, measurement in enumerate(MEASUREMENTS)
+        if measurement["meta_category"] in {"異物", "欠陥"}
+    ]
+
+    for lot_index in (0, 58, 99):
+        values = _generate_values(
+            lot_index,
+            grid,
+            lot_factors[lot_index],
+            DEFAULT_SEED,
+        )
+        assert np.all(values[:, columns] >= 0.0)
+
+
 def test_data_pipeline_script_layout() -> None:
     root = Path(__file__).resolve().parents[1]
 
@@ -220,7 +263,9 @@ def test_kde_data(repository: QualityRepository) -> None:
         DASHBOARD_CONFIG.kde_bins,
     )
     assert data.sample_counts.shape == (45, 100)
+    assert data.in_range_counts.shape == (45, 100)
     assert np.all(data.sample_counts == 6_912)
+    assert np.all(data.in_range_counts <= data.sample_counts)
     assert int(data.sample_counts.sum()) == 31_104_000
     assert np.all(np.diff(data.x_values, axis=1) > 0)
     assert np.isfinite(data.densities).all()
@@ -228,11 +273,48 @@ def test_kde_data(repository: QualityRepository) -> None:
 
     bin_widths = data.x_values[:, 1] - data.x_values[:, 0]
     integrals = data.densities.sum(axis=2) * bin_widths[:, None]
-    assert np.allclose(integrals, 1.0)
+    coverage = data.in_range_counts / data.sample_counts
+    assert np.allclose(integrals, coverage)
 
     work_x = data.colname_index("Work_Xw_v2")
     assert data.spec_lower[work_x] == pytest.approx(3.9)
     assert data.spec_upper[work_x] == pytest.approx(4.1)
+    assert data.display_min[work_x] == pytest.approx(3.85)
+    assert data.display_max[work_x] == pytest.approx(4.15)
+
+    foreign = data.colname_index("Foreign_Length_Long_v1")
+    assert np.isnan(data.spec_lower[foreign])
+    assert data.spec_best[foreign] == pytest.approx(0.0)
+    assert data.spec_upper[foreign] == pytest.approx(0.3)
+    assert data.display_min[foreign] == pytest.approx(0.0)
+    assert data.display_max[foreign] == pytest.approx(0.36)
+
+    two_sided = np.isfinite(data.spec_lower)
+    widths = data.display_max - data.display_min
+    centers = (data.spec_lower + data.spec_upper) / 2.0
+    assert np.allclose(
+        (data.spec_lower[two_sided] - data.display_min[two_sided])
+        / widths[two_sided],
+        1 / 6,
+    )
+    assert np.allclose(
+        (centers[two_sided] - data.display_min[two_sided])
+        / widths[two_sided],
+        1 / 2,
+    )
+    assert np.allclose(
+        (data.spec_upper[two_sided] - data.display_min[two_sided])
+        / widths[two_sided],
+        5 / 6,
+    )
+
+    upper_only = ~two_sided & np.isfinite(data.spec_upper)
+    assert np.all(data.display_min[upper_only] >= 0.0)
+    assert np.allclose(
+        (data.spec_upper[upper_only] - data.display_min[upper_only])
+        / widths[upper_only],
+        5 / 6,
+    )
 
 
 def test_dashboard_window(qtbot, repository: QualityRepository) -> None:
@@ -294,6 +376,7 @@ def test_dashboard_window(qtbot, repository: QualityRepository) -> None:
             ],
         )
     assert all(not line.isVisible() for line in fq_map.kde.lower_lines)
+    assert all(not line.isVisible() for line in fq_map.kde.center_lines)
     assert all(line.isVisible() for line in fq_map.kde.upper_lines)
     assert all(
         line.value() == pytest.approx(0.3)
@@ -309,6 +392,12 @@ def test_dashboard_window(qtbot, repository: QualityRepository) -> None:
         in fq_map.kde.summary_label.text()
     )
     assert "各 6,912測定" in fq_map.kde.summary_label.text()
+    assert "最良値 0" in fq_map.kde.summary_label.text()
+    assert all(
+        plot_item.viewRange()[0] == pytest.approx([0.0, 0.36])
+        for plot_item in fq_map.kde.plot_items
+    )
+    assert (0.3 - 0.0) / (0.36 - 0.0) == pytest.approx(5 / 6)
     assert (
         fq_map.vertical_scroll_area.parentWidget()
         is fq_map.fq_map_section
@@ -475,6 +564,7 @@ def test_dashboard_window(qtbot, repository: QualityRepository) -> None:
     assert fq_map.kde.current_colname == "Work_Xw_v2"
     assert fq_map.kde.selection_label.text() == "Work_Xw_v2"
     assert all(line.isVisible() for line in fq_map.kde.lower_lines)
+    assert all(line.isVisible() for line in fq_map.kde.center_lines)
     assert all(line.isVisible() for line in fq_map.kde.upper_lines)
     assert all(
         line.value() == pytest.approx(3.9)
@@ -484,6 +574,17 @@ def test_dashboard_window(qtbot, repository: QualityRepository) -> None:
         line.value() == pytest.approx(4.1)
         for line in fq_map.kde.upper_lines
     )
+    assert all(
+        line.value() == pytest.approx(4.0)
+        for line in fq_map.kde.center_lines
+    )
+    assert all(
+        plot_item.viewRange()[0] == pytest.approx([3.85, 4.15])
+        for plot_item in fq_map.kde.plot_items
+    )
+    assert (3.9 - 3.85) / (4.15 - 3.85) == pytest.approx(1 / 6)
+    assert (4.0 - 3.85) / (4.15 - 3.85) == pytest.approx(1 / 2)
+    assert (4.1 - 3.85) / (4.15 - 3.85) == pytest.approx(5 / 6)
     kde_work_x_index = fq_map.kde.data.colname_index("Work_Xw_v2")
     assert np.allclose(
         fq_map.kde.curve_items[0].getData()[1],
@@ -524,6 +625,11 @@ def test_dashboard_window(qtbot, repository: QualityRepository) -> None:
     )
     assert fq_map.kde.current_colname == (
         "Foreign_Length_Long_v2"
+    )
+    assert all(not line.isVisible() for line in fq_map.kde.center_lines)
+    assert all(
+        plot_item.viewRange()[0] == pytest.approx([0.0, 0.36])
+        for plot_item in fq_map.kde.plot_items
     )
     qtbot.wait(50)
     assert [view.card.height() for view in fq_map.views] == [

@@ -151,7 +151,8 @@ class QualityRepository:
                     min(value) AS value_min,
                     max(value) AS value_max,
                     min(limmin) AS spec_lower,
-                    max(limmax) AS spec_upper
+                    max(limmax) AS spec_upper,
+                    min(meta_best) AS spec_best
                 FROM read_parquet(?)
                 WHERE meta_type = 'spec'
                   AND NOT meta_ignore
@@ -176,26 +177,54 @@ class QualityRepository:
             bounds AS (
                 SELECT
                     *,
-                    raw_min - greatest(
-                        raw_max - raw_min,
-                        abs(raw_max) * 0.01,
-                        1e-9
-                    ) * 0.04 AS plot_min,
-                    raw_max + greatest(
-                        raw_max - raw_min,
-                        abs(raw_max) * 0.01,
-                        1e-9
-                    ) * 0.04 AS plot_max
+                    CASE
+                        WHEN spec_lower IS NOT NULL
+                         AND spec_upper IS NOT NULL
+                        THEN spec_lower
+                             - (spec_upper - spec_lower) / 4.0
+                        WHEN spec_upper IS NOT NULL
+                         AND spec_best IS NOT NULL
+                        THEN spec_best
+                        WHEN spec_lower IS NOT NULL
+                         AND spec_best IS NOT NULL
+                        THEN spec_lower
+                             - (spec_best - spec_lower) / 5.0
+                        ELSE raw_min - greatest(
+                            raw_max - raw_min,
+                            abs(raw_max) * 0.01,
+                            1e-9
+                        ) * 0.04
+                    END AS plot_min,
+                    CASE
+                        WHEN spec_lower IS NOT NULL
+                         AND spec_upper IS NOT NULL
+                        THEN spec_upper
+                             + (spec_upper - spec_lower) / 4.0
+                        WHEN spec_upper IS NOT NULL
+                         AND spec_best IS NOT NULL
+                        THEN spec_best
+                             + (spec_upper - spec_best) * 1.2
+                        WHEN spec_lower IS NOT NULL
+                         AND spec_best IS NOT NULL
+                        THEN spec_best
+                        ELSE raw_max + greatest(
+                            raw_max - raw_min,
+                            abs(raw_max) * 0.01,
+                            1e-9
+                        ) * 0.04
+                    END AS plot_max
                 FROM ranges
             ),
             binned AS (
                 SELECT
                     quality.lot_number,
                     quality.colname,
-                    least(
-                        {bins - 1},
-                        greatest(
-                            0,
+                    CASE
+                        WHEN quality.value < bounds.plot_min
+                          OR quality.value > bounds.plot_max
+                        THEN NULL
+                        ELSE least(
+                            {bins - 1},
                             cast(
                                 floor(
                                     (quality.value - bounds.plot_min)
@@ -208,11 +237,12 @@ class QualityRepository:
                                 AS INTEGER
                             )
                         )
-                    ) AS bin_index,
+                    END AS bin_index,
                     bounds.plot_min,
                     bounds.plot_max,
                     bounds.spec_lower,
-                    bounds.spec_upper
+                    bounds.spec_upper,
+                    bounds.spec_best
                 FROM read_parquet(?) AS quality
                 JOIN bounds ON quality.colname = bounds.colname
                 WHERE quality.meta_type = 'spec'
@@ -227,6 +257,7 @@ class QualityRepository:
                 any_value(plot_max) AS plot_max,
                 any_value(spec_lower) AS spec_lower,
                 any_value(spec_upper) AS spec_upper,
+                any_value(spec_best) AS spec_best,
                 count(*) AS count
             FROM binned
             GROUP BY lot_number, colname, bin_index

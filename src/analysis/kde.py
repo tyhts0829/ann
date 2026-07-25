@@ -24,8 +24,12 @@ class KdeData:
     x_values: np.ndarray
     densities: np.ndarray
     sample_counts: np.ndarray
+    in_range_counts: np.ndarray
+    display_min: np.ndarray
+    display_max: np.ndarray
     spec_lower: np.ndarray
     spec_upper: np.ndarray
+    spec_best: np.ndarray
 
     def colname_index(self, colname: str) -> int:
         """検査項目の配列位置。"""
@@ -70,24 +74,43 @@ def build_kde_data(
     )
     rows = frame["colname"].map(colname_indices).to_numpy(dtype=int)
     lots = frame["lot_number"].map(lot_indices).to_numpy(dtype=int)
-    bins = frame["bin_index"].to_numpy(dtype=int)
-    counts[rows, lots, bins] = frame["count"].to_numpy(dtype=np.int64)
+    row_counts = frame["count"].to_numpy(dtype=np.int64)
+    sample_counts = np.zeros(
+        (len(colnames), len(lot_numbers)),
+        dtype=np.int64,
+    )
+    np.add.at(sample_counts, (rows, lots), row_counts)
+
+    binned = frame[frame["bin_index"].notna()]
+    rows = binned["colname"].map(colname_indices).to_numpy(dtype=int)
+    lots = binned["lot_number"].map(lot_indices).to_numpy(dtype=int)
+    bins = binned["bin_index"].to_numpy(dtype=int)
+    counts[rows, lots, bins] = binned["count"].to_numpy(
+        dtype=np.int64
+    )
+    in_range_counts = counts.sum(axis=2)
 
     x_values = np.empty((len(colnames), bin_count))
     bin_widths = np.empty(len(colnames))
+    display_min = np.empty(len(colnames))
+    display_max = np.empty(len(colnames))
     spec_lower = np.full(len(colnames), np.nan)
     spec_upper = np.full(len(colnames), np.nan)
+    spec_best = np.full(len(colnames), np.nan)
     for row, colname in enumerate(colnames):
         first = frame[frame["colname"] == colname].iloc[0]
+        display_min[row] = float(first["plot_min"])
+        display_max[row] = float(first["plot_max"])
         edges = np.linspace(
-            float(first["plot_min"]),
-            float(first["plot_max"]),
+            display_min[row],
+            display_max[row],
             bin_count + 1,
         )
         bin_widths[row] = edges[1] - edges[0]
         x_values[row] = edges[:-1] + bin_widths[row] / 2.0
         spec_lower[row] = float(first["spec_lower"])
         spec_upper[row] = float(first["spec_upper"])
+        spec_best[row] = float(first["spec_best"])
 
     kernel = _gaussian_kernel(DASHBOARD_CONFIG.kde_bandwidth_bins)
     radius = len(kernel) // 2
@@ -98,10 +121,18 @@ def build_kde_data(
         axis=2,
     )
     smoothed = np.sum(windows * kernel, axis=-1)
-    sample_counts = counts.sum(axis=2)
-    densities = smoothed / (
-        smoothed.sum(axis=2, keepdims=True)
-        * bin_widths[:, None, None]
+    smoothed_totals = smoothed.sum(axis=2, keepdims=True)
+    normalized = np.divide(
+        smoothed,
+        smoothed_totals,
+        out=np.zeros_like(smoothed),
+        where=smoothed_totals > 0.0,
+    )
+    coverage = in_range_counts / sample_counts
+    densities = (
+        normalized
+        * coverage[:, :, None]
+        / bin_widths[:, None, None]
     )
 
     return KdeData(
@@ -110,8 +141,12 @@ def build_kde_data(
         x_values=x_values,
         densities=densities,
         sample_counts=sample_counts,
+        in_range_counts=in_range_counts,
+        display_min=display_min,
+        display_max=display_max,
         spec_lower=spec_lower,
         spec_upper=spec_upper,
+        spec_best=spec_best,
     )
 
 
@@ -135,6 +170,7 @@ class KdeWidget(QtWidgets.QWidget):
         self.plot_items: list[pg.PlotItem] = []
         self.curve_items: list[pg.PlotDataItem] = []
         self.lower_lines: list[pg.InfiniteLine] = []
+        self.center_lines: list[pg.InfiniteLine] = []
         self.upper_lines: list[pg.InfiniteLine] = []
         self._build_ui()
 
@@ -169,15 +205,21 @@ class KdeWidget(QtWidgets.QWidget):
                 brush=pg.mkBrush(58, 154, 147, 80),
             )
             lower_line = self._build_spec_line("#3157a4")
+            center_line = self._build_spec_line(
+                "#667080",
+                QtCore.Qt.PenStyle.DashDotLine,
+            )
             upper_line = self._build_spec_line("#c43d3d")
             plot_item.addItem(curve)
             plot_item.addItem(lower_line)
+            plot_item.addItem(center_line)
             plot_item.addItem(upper_line)
 
             self.plot_widgets.append(plot_widget)
             self.plot_items.append(plot_item)
             self.curve_items.append(curve)
             self.lower_lines.append(lower_line)
+            self.center_lines.append(center_line)
             self.upper_lines.append(upper_line)
             layout.addWidget(plot_widget, stretch=1)
 
@@ -214,7 +256,10 @@ class KdeWidget(QtWidgets.QWidget):
         return panel
 
     @staticmethod
-    def _build_spec_line(color: str) -> pg.InfiniteLine:
+    def _build_spec_line(
+        color: str,
+        style: QtCore.Qt.PenStyle = QtCore.Qt.PenStyle.DashLine,
+    ) -> pg.InfiniteLine:
         """規格線の生成。"""
         line = pg.InfiniteLine(
             angle=90,
@@ -222,7 +267,7 @@ class KdeWidget(QtWidgets.QWidget):
             pen=pg.mkPen(
                 color,
                 width=1.6,
-                style=QtCore.Qt.PenStyle.DashLine,
+                style=style,
             ),
         )
         line.setZValue(20)
@@ -242,13 +287,20 @@ class KdeWidget(QtWidgets.QWidget):
             row,
             first_lot:last_lot,
         ]
+        display_min = self.data.display_min[row]
+        display_max = self.data.display_max[row]
         y_max = max(
             1.0,
             float(self.data.densities[row].max()) * 1.12,
         )
-        x_padding = (x_values[1] - x_values[0]) / 2.0
         lower = self.data.spec_lower[row]
         upper = self.data.spec_upper[row]
+        best = self.data.spec_best[row]
+        center = (
+            (lower + upper) / 2.0
+            if np.isfinite(lower) and np.isfinite(upper)
+            else np.nan
+        )
 
         for offset, plot_item in enumerate(self.plot_items):
             density = visible_densities[offset]
@@ -259,24 +311,51 @@ class KdeWidget(QtWidgets.QWidget):
                 size="7pt",
             )
             plot_item.setXRange(
-                x_values[0] - x_padding,
-                x_values[-1] + x_padding,
+                display_min,
+                display_max,
                 padding=0.0,
             )
             plot_item.setYRange(0.0, y_max, padding=0.0)
             self._set_spec_line(self.lower_lines[offset], lower)
+            self._set_spec_line(self.center_lines[offset], center)
             self._set_spec_line(self.upper_lines[offset], upper)
 
-        sample_count = int(
-            self.data.sample_counts[row, first_lot:last_lot].min()
+        visible_counts = self.data.sample_counts[
+            row,
+            first_lot:last_lot,
+        ]
+        sample_count = int(visible_counts.min())
+        outside_rates = 1.0 - (
+            self.data.in_range_counts[row, first_lot:last_lot]
+            / visible_counts
         )
         self.selection_label.setText(colname)
-        self.summary_label.setText(
-            f"表示中 {len(self.current_lot_numbers)} lot\n"
-            f"各 {sample_count:,}測定\n"
-            f"規格下限（青） {self._format_limit(lower)}\n"
-            f"規格上限（赤） {self._format_limit(upper)}"
+        lines = [
+            f"表示中 {len(self.current_lot_numbers)} lot",
+            f"各 {sample_count:,}測定",
+        ]
+        if np.isfinite(center):
+            lines.extend(
+                [
+                    f"規格下限（青） {self._format_limit(lower)}",
+                    f"規格中心（灰） {self._format_limit(center)}",
+                    f"規格上限（赤） {self._format_limit(upper)}",
+                ]
+            )
+        else:
+            lines.append(f"最良値 {self._format_limit(best)}")
+            if np.isfinite(upper):
+                lines.append(
+                    f"規格上限（赤） {self._format_limit(upper)}"
+                )
+            else:
+                lines.append(
+                    f"規格下限（青） {self._format_limit(lower)}"
+                )
+        lines.append(
+            f"表示範囲外 最大 {outside_rates.max():.1%}"
         )
+        self.summary_label.setText("\n".join(lines))
 
     @staticmethod
     def _set_spec_line(
