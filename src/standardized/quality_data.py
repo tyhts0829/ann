@@ -28,6 +28,10 @@ class QualityRepository:
             [str(self.parquet_path)],
         ).fetchall()
 
+    def close(self) -> None:
+        """データベース接続の終了。"""
+        self.connection.close()
+
     def ng_rate_by_frame(
         self,
         lot_numbers: tuple[str, ...] | None = None,
@@ -43,6 +47,7 @@ class QualityRepository:
             SELECT
                 lot_number,
                 FrameNo,
+                vision,
                 colname,
                 meta_category,
                 count(*) AS total_count,
@@ -65,7 +70,12 @@ class QualityRepository:
             WHERE meta_type = 'spec'
               AND NOT meta_ignore
               {lot_filter}
-            GROUP BY lot_number, FrameNo, colname, meta_category
+            GROUP BY
+                lot_number,
+                FrameNo,
+                vision,
+                colname,
+                meta_category
         """
         return self.connection.execute(query, parameters).df()
 

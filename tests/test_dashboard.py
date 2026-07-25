@@ -6,11 +6,25 @@ import numpy as np
 import pyarrow.parquet as pq
 import pyqtgraph as pg
 import pytest
-from PySide6 import QtCore
+from PySide6 import QtCore, QtWidgets
 
 from dashboard import DashboardWindow, STYLESHEET
-from src.analysis.fq_map import build_fq_map_data
-from src.analysis.frame_map import build_frame_map_data
+from src.analysis.fq_map import (
+    FMAP_SECTION_HEIGHT,
+    FQ_MAP_SECTION_HEIGHT,
+    HISTOGRAM_RESERVED_HEIGHT,
+    build_fq_map_data,
+)
+from src.analysis.frame_map import (
+    DEFAULT_ROW_HEIGHT,
+    VISIBLE_LOTS,
+    build_frame_map_data,
+)
+from src.dashboard_config import (
+    CONFIG_PATH,
+    DASHBOARD_CONFIG,
+    load_dashboard_config,
+)
 from src.standardized.quality_data import QualityRepository
 
 
@@ -45,6 +59,12 @@ def test_all_lot_fq_map(repository: QualityRepository) -> None:
     assert data.frame_numbers.tolist()[:25] == [*range(1, 25), 1]
     assert len(set(data.colnames)) == 45
     assert all(colname.endswith(("_v1", "_v2", "_v3")) for colname in data.colnames)
+    assert set(data.visions) == {"vision_1", "vision_2", "vision_3"}
+    assert data.filter_vision("vision_2").ng_rates.shape == (15, 2_400)
+    assert data.filter_rows("異物", "vision_2").ng_rates.shape == (
+        3,
+        2_400,
+    )
     assert np.isfinite(data.ng_rates).all()
     assert set(data.categories) == {
         "異物",
@@ -148,6 +168,16 @@ def test_data_pipeline_script_layout() -> None:
     ).exists()
 
 
+def test_dashboard_config() -> None:
+    config = load_dashboard_config(CONFIG_PATH)
+
+    assert config == DASHBOARD_CONFIG
+    assert VISIBLE_LOTS == config.visible_lots
+    assert FQ_MAP_SECTION_HEIGHT == config.fqmap_height
+    assert FMAP_SECTION_HEIGHT == config.fmap_height
+    assert HISTOGRAM_RESERVED_HEIGHT == config.histogram_height
+
+
 def test_latest_lot_fq_map(repository: QualityRepository) -> None:
     data = build_fq_map_data(repository, ("LOT_20260720_B",))
 
@@ -179,23 +209,72 @@ def test_frame_map_data(repository: QualityRepository) -> None:
 def test_dashboard_window(qtbot, repository: QualityRepository) -> None:
     window = DashboardWindow(repository)
     qtbot.addWidget(window)
-    window.show()
+    assert window.fq_map is None
+    assert window.loading_progress.minimum() == 0
+    assert window.loading_progress.maximum() == 0
+    with qtbot.waitSignal(window.data_loaded, timeout=15_000):
+        window.show()
     qtbot.wait(50)
     fq_map = window.fq_map
+    assert fq_map is not None
 
     assert window.windowTitle() == "Quality Dashboard"
+    section_texts = {
+        label.text()
+        for label in fq_map.findChildren(QtWidgets.QLabel)
+        if label.objectName() == "mapSectionTitle"
+    }
+    assert section_texts == {"FQmap", "Fmap"}
     assert len(fq_map.views) == 3
     assert len(fq_map.frame_map.rows) == 3
     assert fq_map.plots_container.layout().spacing() == 0
+    assert fq_map.fq_map_section.height() == FQ_MAP_SECTION_HEIGHT
+    assert fq_map.fmap_section.height() == FMAP_SECTION_HEIGHT
+    assert fq_map.fq_map_section.isAncestorOf(fq_map.toolbar)
+    assert len(
+        [
+            frame
+            for frame in fq_map.findChildren(QtWidgets.QFrame)
+            if frame.objectName() == "mapCard"
+        ]
+    ) == 2
+    assert (
+        fq_map.histogram_reserved_space.height()
+        == HISTOGRAM_RESERVED_HEIGHT
+    )
+    assert (
+        fq_map.vertical_scroll_area.parentWidget()
+        is fq_map.fq_map_section
+    )
+    assert not fq_map.plots_container.isAncestorOf(fq_map.frame_map)
+    assert fq_map.findChildren(QtWidgets.QScrollArea) == [
+        fq_map.vertical_scroll_area
+    ]
     assert all(
         view.image_item.image.shape == (45, 2_400)
         for view in fq_map.views
     )
     assert all(
-        len(row.image_items) == 5
+        len(row.image_items) == VISIBLE_LOTS
         and all(image.image.shape == (12, 24) for image in row.image_items)
         for row in fq_map.frame_map.rows
     )
+    fq_lot_width = (
+        fq_map.views[0]
+        .plot_item.getViewBox()
+        .sceneBoundingRect()
+        .width()
+        / VISIBLE_LOTS
+    )
+    fmap_lot_width = (
+        fq_map.frame_map.rows[0]
+        .plot_widgets[0]
+        .getPlotItem()
+        .getViewBox()
+        .sceneBoundingRect()
+        .width()
+    )
+    assert fmap_lot_width == pytest.approx(fq_lot_width, rel=0.01)
     grid_lines = [
         item
         for item in fq_map.frame_map.rows[0]
@@ -220,6 +299,7 @@ def test_dashboard_window(qtbot, repository: QualityRepository) -> None:
     for view in fq_map.views:
         left_axis = view.plot_item.getAxis("left")
         assert not left_axis.label.isVisible()
+        assert left_axis.grid is False
     top_axis = fq_map.views[0].plot_item.getAxis("top")
     assert top_axis.isVisible()
     assert len(top_axis._tickLevels) == 1
@@ -236,29 +316,56 @@ def test_dashboard_window(qtbot, repository: QualityRepository) -> None:
         for view in fq_map.views[1:]
     )
     assert [view.card.height() for view in fq_map.views] == [
-        238,
-        210,
-        210,
+        DASHBOARD_CONFIG.fqmap_plot_height + 28,
+        DASHBOARD_CONFIG.fqmap_plot_height,
+        DASHBOARD_CONFIG.fqmap_plot_height,
     ]
     assert fq_map.current_data.lot_count == 100
-    assert fq_map.horizontal_scrollbar.maximum() == 95
-    assert fq_map.horizontal_scrollbar.value() == 95
+    last_page = fq_map.current_data.lot_count - VISIBLE_LOTS
+    assert fq_map.horizontal_scrollbar.maximum() == last_page
+    assert fq_map.horizontal_scrollbar.value() == last_page
     assert fq_map.all_lots_label.text() == "全100 lot"
     assert "総合NG率" in fq_map.ng_rate_label.text()
+    assert [
+        fq_map.vision_combo.itemData(index)
+        for index in range(fq_map.vision_combo.count())
+    ] == [None, "vision_1", "vision_2", "vision_3"]
+    assert fq_map.findChild(
+        QtWidgets.QLabel,
+        "frameMapContextCaption",
+    ).text() == "選択中の検査項目"
+    assert fq_map.fmap_selection_label.text() == (
+        "Foreign_Length_Long_v1"
+    )
+    assert all(
+        view.selection_region.getRegion()
+        == pytest.approx([-0.5, 0.5])
+        for view in fq_map.views
+    )
     assert (
         fq_map.vertical_scroll_area.verticalScrollBarPolicy()
         == QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded
     )
+    fmap_position = fq_map.fmap_section.pos()
+    fq_scrollbar = fq_map.vertical_scroll_area.verticalScrollBar()
+    fq_scrollbar.setValue(fq_scrollbar.maximum())
+    assert fq_scrollbar.value() == fq_scrollbar.maximum()
+    assert fq_map.fmap_section.pos() == fmap_position
     assert all(
         view.plot_item.viewRange()[0]
-        == pytest.approx([2_279.5, 2_399.5])
+        == pytest.approx(
+            [
+                last_page * 24 - 0.5,
+                fq_map.current_data.lot_count * 24 - 0.5,
+            ]
+        )
         for view in fq_map.views
     )
 
     fq_map.horizontal_scrollbar.setValue(0)
     assert all(
         view.plot_item.viewRange()[0]
-        == pytest.approx([-0.5, 119.5])
+        == pytest.approx([-0.5, VISIBLE_LOTS * 24 - 0.5])
         for view in fq_map.views
     )
     assert np.allclose(
@@ -277,9 +384,14 @@ def test_dashboard_window(qtbot, repository: QualityRepository) -> None:
         def scenePos(self) -> QtCore.QPointF:
             return scene_position
 
-    fq_map._select_fq_cell(selected_view, ClickEvent())
+    fq_map._select_fq_row(selected_view, ClickEvent())
     assert fq_map.selected_colname == "Work_Xw_v2"
-    assert fq_map.selected_column == 5
+    assert all(
+        view.selection_region.getRegion()
+        == pytest.approx([18.5, 19.5])
+        for view in fq_map.views
+    )
+    assert fq_map.fmap_selection_label.text().endswith("Work_Xw_v2")
     work_x_index = fq_map.frame_map.data.colname_index("Work_Xw_v2")
     assert np.allclose(
         fq_map.frame_map.rows[0].image_items[0].image,
@@ -297,10 +409,29 @@ def test_dashboard_window(qtbot, repository: QualityRepository) -> None:
     assert fq_map.selected_colname == "Foreign_Length_Long_v1"
     assert np.allclose(
         fq_map.frame_map.rows[0].image_items[0].image,
-        fq_map.frame_map.data.ng_rates[0, 95],
+        fq_map.frame_map.data.ng_rates[0, last_page],
     )
 
-    window.resize(1_883, 1_377)
+    fq_map.vision_combo.setCurrentIndex(
+        fq_map.vision_combo.findData("vision_2")
+    )
+    assert fq_map.current_data.ng_rates.shape == (3, 2_400)
+    assert all(
+        colname.endswith("_v2")
+        for colname in fq_map.current_data.colnames
+    )
+    assert fq_map.selected_colname == "Foreign_Length_Long_v2"
+    assert "異物 / vision_2" in fq_map.scope_label.text()
+    assert fq_map.fmap_selection_label.text().endswith(
+        "Foreign_Length_Long_v2"
+    )
+    qtbot.wait(50)
+    assert [view.card.height() for view in fq_map.views] == [
+        DASHBOARD_CONFIG.fqmap_plot_height + 28,
+        DASHBOARD_CONFIG.fqmap_plot_height,
+        DASHBOARD_CONFIG.fqmap_plot_height,
+    ]
+    window.resize(2_000, 1_650)
     qtbot.wait(100)
     row_rects = [
         row.widget.geometry()
@@ -314,8 +445,25 @@ def test_dashboard_window(qtbot, repository: QualityRepository) -> None:
     assert fq_map.frame_map.height() == sum(
         rectangle.height() for rectangle in row_rects
     )
-    first_plot = fq_map.frame_map.rows[0].plot_widgets[0]
-    assert first_plot.width() / first_plot.height() == pytest.approx(
-        2.0,
-        abs=0.03,
+    assert min(rectangle.height() for rectangle in row_rects) == (
+        DEFAULT_ROW_HEIGHT
     )
+    assert max(rectangle.height() for rectangle in row_rects) <= (
+        DEFAULT_ROW_HEIGHT + 1
+    )
+    assert fq_map.fq_map_section.height() == FQ_MAP_SECTION_HEIGHT
+    assert fq_map.fmap_section.height() == FMAP_SECTION_HEIGHT
+    assert (
+        fq_map.histogram_reserved_space.height()
+        == HISTOGRAM_RESERVED_HEIGHT
+    )
+
+    window.resize(1_600, 1_550)
+    qtbot.wait(100)
+    assert sum(
+        row.widget.height() for row in fq_map.frame_map.rows
+    ) == FMAP_SECTION_HEIGHT
+    assert fq_map.fq_map_section.height() == FQ_MAP_SECTION_HEIGHT
+    assert fq_map.fmap_section.height() == FMAP_SECTION_HEIGHT
+    qtbot.keyClick(window, QtCore.Qt.Key.Key_Escape)
+    qtbot.waitUntil(lambda: not window.isVisible())

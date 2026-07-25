@@ -11,14 +11,27 @@ import pandas as pd
 import pyqtgraph as pg
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from src.analysis.frame_map import FrameMapWidget, VISIBLE_LOTS
+from src.analysis.frame_map import (
+    FrameMapData,
+    FrameMapWidget,
+    VISIBLE_LOTS,
+)
 from src.analysis.map_palettes import MAP_DEFINITIONS, make_color_map
-from src.analysis.quality_columns import CATEGORY_ORDER, SPEC_ORDER
+from src.analysis.quality_columns import (
+    CATEGORY_ORDER,
+    SPEC_ORDER,
+    VISION_ORDER,
+)
+from src.dashboard_config import DASHBOARD_CONFIG
 from src.standardized.quality_data import QualityRepository
 
 
 FRAME_NUMBERS = np.arange(1, 25)
 VISIBLE_COLUMNS = len(FRAME_NUMBERS) * VISIBLE_LOTS
+FQ_MAP_SECTION_HEIGHT = DASHBOARD_CONFIG.fqmap_height
+FMAP_SECTION_HEIGHT = DASHBOARD_CONFIG.fmap_height
+HISTOGRAM_RESERVED_HEIGHT = DASHBOARD_CONFIG.histogram_height
+FQ_MAP_PLOT_HEIGHT = DASHBOARD_CONFIG.fqmap_plot_height
 
 
 @dataclass(frozen=True)
@@ -27,6 +40,7 @@ class FqMapData:
 
     colnames: tuple[str, ...]
     categories: tuple[str, ...]
+    visions: tuple[str, ...]
     lot_numbers: tuple[str, ...]
     column_lots: tuple[str, ...]
     frame_numbers: np.ndarray
@@ -52,19 +66,29 @@ class FqMapData:
     def lot_count(self) -> int:
         return len(self.lot_numbers)
 
-    def filter_category(self, category: str | None) -> FqMapData:
-        """meta_categoryによる行抽出。"""
-        if category is None:
+    def filter_rows(
+        self,
+        category: str | None = None,
+        vision: str | None = None,
+    ) -> FqMapData:
+        """カテゴリ・visionによる行抽出。"""
+        if category is None and vision is None:
             return self
 
-        row_indices = np.flatnonzero(
-            np.asarray(self.categories, dtype=object) == category
-        )
+        row_filter = np.ones(len(self.colnames), dtype=bool)
+        if category is not None:
+            row_filter &= (
+                np.asarray(self.categories, dtype=object) == category
+            )
+        if vision is not None:
+            row_filter &= np.asarray(self.visions, dtype=object) == vision
+        row_indices = np.flatnonzero(row_filter)
         return FqMapData(
             colnames=tuple(self.colnames[index] for index in row_indices),
             categories=tuple(
                 self.categories[index] for index in row_indices
             ),
+            visions=tuple(self.visions[index] for index in row_indices),
             lot_numbers=self.lot_numbers,
             column_lots=self.column_lots,
             frame_numbers=self.frame_numbers,
@@ -74,6 +98,14 @@ class FqMapData:
             ng_counts=self.ng_counts[row_indices],
             total_counts=self.total_counts[row_indices],
         )
+
+    def filter_category(self, category: str | None) -> FqMapData:
+        """meta_categoryによる行抽出。"""
+        return self.filter_rows(category=category)
+
+    def filter_vision(self, vision: str | None) -> FqMapData:
+        """visionによる行抽出。"""
+        return self.filter_rows(vision=vision)
 
 
 @dataclass
@@ -87,7 +119,7 @@ class FqMapView:
     plot_item: pg.PlotItem
     image_item: pg.ImageItem
     color_bar: pg.ColorBarItem
-    selection_item: pg.ScatterPlotItem
+    selection_region: pg.LinearRegionItem
     separators: list[pg.InfiniteLine] = field(default_factory=list)
     mouse_proxy: pg.SignalProxy | None = None
 
@@ -112,10 +144,18 @@ def build_fq_map_data(
         .to_dict()
     )
     categories = tuple(category_lookup[colname] for colname in colnames)
+    vision_lookup = (
+        frame[["colname", "vision"]]
+        .drop_duplicates("colname")
+        .set_index("colname")["vision"]
+        .to_dict()
+    )
+    visions = tuple(vision_lookup[colname] for colname in colnames)
 
     return FqMapData(
         colnames=colnames,
         categories=categories,
+        visions=visions,
         lot_numbers=lot_numbers,
         column_lots=tuple(
             lot_number
@@ -188,33 +228,57 @@ def _matrix(
 class FqMapWidget(QtWidgets.QWidget):
     """NG率・規格位置平均・標準偏差の3段FQマップ。"""
 
-    def __init__(self, repository: QualityRepository) -> None:
+    def __init__(
+        self,
+        repository: QualityRepository,
+        full_data: FqMapData | None = None,
+        frame_map_data: FrameMapData | None = None,
+    ) -> None:
         super().__init__()
         self.repository = repository
-        self.full_data = build_fq_map_data(repository)
+        self.full_data = (
+            build_fq_map_data(repository)
+            if full_data is None
+            else full_data
+        )
+        self.frame_map_data = frame_map_data
         self.current_data = self.full_data
         self.selected_colname = self.full_data.colnames[0]
-        self.selected_column = len(self.full_data.frame_numbers) - 1
         self.views: list[FqMapView] = []
         self._build_ui()
-        self._populate_categories()
+        self._populate_filters()
         self._render_fq_maps()
 
     def _build_ui(self) -> None:
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
-        layout.addWidget(self._build_toolbar())
-        layout.addWidget(self._build_vertical_scroll_area(), stretch=1)
+        layout.setSpacing(6)
+        self.fq_map_section = self._build_fq_map_section()
+        self.fmap_section = self._build_fmap_section()
+        layout.addWidget(self.fq_map_section)
+        layout.addWidget(self.fmap_section)
         layout.addLayout(self._build_horizontal_navigation())
         layout.addWidget(self._build_footer())
+        self.histogram_reserved_space = QtWidgets.QWidget()
+        self.histogram_reserved_space.setObjectName(
+            "histogramReservedSpace"
+        )
+        self.histogram_reserved_space.setFixedHeight(
+            HISTOGRAM_RESERVED_HEIGHT
+        )
+        layout.addWidget(self.histogram_reserved_space)
+        layout.addStretch()
 
     def _build_toolbar(self) -> QtWidgets.QWidget:
-        card = QtWidgets.QFrame()
+        card = QtWidgets.QWidget()
         card.setObjectName("toolbarCard")
+        card.setFixedHeight(48)
         layout = QtWidgets.QHBoxLayout(card)
-        layout.setContentsMargins(18, 12, 18, 12)
-        layout.setSpacing(12)
+        layout.setContentsMargins(14, 4, 14, 4)
+        layout.setSpacing(10)
+
+        fq_map_title = QtWidgets.QLabel("FQmap")
+        fq_map_title.setObjectName("mapSectionTitle")
 
         lot_label = QtWidgets.QLabel("対象")
         lot_label.setObjectName("fieldLabel")
@@ -229,10 +293,19 @@ class FqMapWidget(QtWidgets.QWidget):
         self.category_combo = QtWidgets.QComboBox()
         self.category_combo.setObjectName("categoryCombo")
         self.category_combo.setMinimumWidth(150)
+        self.category_combo.setAccessibleName("カテゴリフィルター")
+
+        vision_label = QtWidgets.QLabel("Vision")
+        vision_label.setObjectName("fieldLabel")
+        self.vision_combo = QtWidgets.QComboBox()
+        self.vision_combo.setObjectName("visionCombo")
+        self.vision_combo.setMinimumWidth(125)
+        self.vision_combo.setAccessibleName("Visionフィルター")
 
         self.ng_rate_label = QtWidgets.QLabel()
         self.ng_rate_label.setObjectName("ngRateLabel")
 
+        layout.addWidget(fq_map_title)
         layout.addWidget(lot_label)
         layout.addWidget(self.all_lots_label)
         layout.addSpacing(8)
@@ -240,11 +313,27 @@ class FqMapWidget(QtWidgets.QWidget):
         layout.addStretch()
         layout.addWidget(category_label)
         layout.addWidget(self.category_combo)
+        layout.addWidget(vision_label)
+        layout.addWidget(self.vision_combo)
         layout.addSpacing(8)
         layout.addWidget(self.ng_rate_label)
         return card
 
+    def _build_fq_map_section(self) -> QtWidgets.QWidget:
+        """固定高のFQmapセクション。"""
+        section = QtWidgets.QFrame()
+        section.setObjectName("mapCard")
+        section.setFixedHeight(FQ_MAP_SECTION_HEIGHT)
+        layout = QtWidgets.QVBoxLayout(section)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        self.toolbar = self._build_toolbar()
+        layout.addWidget(self.toolbar)
+        layout.addWidget(self._build_vertical_scroll_area(), stretch=1)
+        return section
+
     def _build_vertical_scroll_area(self) -> QtWidgets.QScrollArea:
+        """FQmap内容専用の縦スクロール領域。"""
         self.vertical_scroll_area = QtWidgets.QScrollArea()
         self.vertical_scroll_area.setObjectName("heatmapScrollArea")
         self.vertical_scroll_area.setWidgetResizable(True)
@@ -274,13 +363,26 @@ class FqMapWidget(QtWidgets.QWidget):
             self.views.append(view)
             plots_layout.addWidget(view.card)
 
+        self.vertical_scroll_area.setWidget(self.plots_container)
+        return self.vertical_scroll_area
+
+    def _build_fmap_section(self) -> QtWidgets.QWidget:
+        """固定高のFmapセクション。"""
+        section = QtWidgets.QFrame()
+        section.setObjectName("mapCard")
+        section.setFixedHeight(FMAP_SECTION_HEIGHT)
+        layout = QtWidgets.QVBoxLayout(section)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
         self.frame_map = FrameMapWidget(
             self.repository,
             self.full_data.lot_numbers,
+            self.frame_map_data,
         )
-        plots_layout.addWidget(self.frame_map)
-        self.vertical_scroll_area.setWidget(self.plots_container)
-        return self.vertical_scroll_area
+        self.fmap_selection_label = self.frame_map.selection_label
+        layout.addWidget(self.frame_map)
+        return section
 
     def _build_fq_map_view(
         self,
@@ -306,7 +408,6 @@ class FqMapWidget(QtWidgets.QWidget):
             plot_item.getAxis("top").setHeight(28)
         else:
             plot_item.hideAxis("top")
-        plot_item.showGrid(x=False, y=True, alpha=0.18)
 
         axis_names = (
             ("left", "top")
@@ -325,14 +426,20 @@ class FqMapWidget(QtWidgets.QWidget):
         image_item.setColorMap(color_map)
         plot_item.addItem(image_item)
 
-        selection_item = pg.ScatterPlotItem(
-            symbol="d",
-            size=8,
-            pen=pg.mkPen("#ffffff", width=1.5),
-            brush=pg.mkBrush("#3157a4"),
+        selection_region = pg.LinearRegionItem(
+            values=(-0.5, 0.5),
+            orientation=pg.LinearRegionItem.Horizontal,
+            movable=False,
+            pen=pg.mkPen("#3157a4", width=1.4),
+            brush=pg.mkBrush(49, 87, 164, 38),
+            hoverPen=pg.mkPen("#3157a4", width=1.4),
+            hoverBrush=pg.mkBrush(49, 87, 164, 38),
         )
-        selection_item.setZValue(30)
-        plot_item.addItem(selection_item)
+        selection_region.setAcceptedMouseButtons(
+            QtCore.Qt.MouseButton.NoButton
+        )
+        selection_region.setZValue(30)
+        plot_item.addItem(selection_region)
 
         color_bar = pg.ColorBarItem(
             values=(0.0, 1.0),
@@ -356,7 +463,7 @@ class FqMapWidget(QtWidgets.QWidget):
             plot_item=plot_item,
             image_item=image_item,
             color_bar=color_bar,
-            selection_item=selection_item,
+            selection_region=selection_region,
         )
         view.mouse_proxy = pg.SignalProxy(
             plot_widget.scene().sigMouseMoved,
@@ -366,7 +473,7 @@ class FqMapWidget(QtWidgets.QWidget):
             ),
         )
         plot_widget.scene().sigMouseClicked.connect(
-            lambda event, fq_view=view: self._select_fq_cell(
+            lambda event, fq_view=view: self._select_fq_row(
                 fq_view,
                 event,
             )
@@ -424,22 +531,36 @@ class FqMapWidget(QtWidgets.QWidget):
         layout.addWidget(self.scale_label)
         return footer
 
-    def _populate_categories(self) -> None:
-        blocker = QtCore.QSignalBlocker(self.category_combo)
-        self.category_combo.addItem("None", None)
+    def _populate_filters(self) -> None:
+        """カテゴリとvisionの選択肢設定。"""
+        category_blocker = QtCore.QSignalBlocker(self.category_combo)
+        self.category_combo.addItem("すべて", None)
         available = set(self.full_data.categories)
         for category in CATEGORY_ORDER:
             if category in available:
                 self.category_combo.addItem(category, category)
-        del blocker
+        del category_blocker
+
+        vision_blocker = QtCore.QSignalBlocker(self.vision_combo)
+        self.vision_combo.addItem("すべて", None)
+        available_visions = set(self.full_data.visions)
+        for vision in VISION_ORDER:
+            if vision in available_visions:
+                self.vision_combo.addItem(vision, vision)
+        del vision_blocker
+
         self.category_combo.currentIndexChanged.connect(
+            self._render_fq_maps
+        )
+        self.vision_combo.currentIndexChanged.connect(
             self._render_fq_maps
         )
 
     @QtCore.Slot()
     def _render_fq_maps(self) -> None:
         category = self.category_combo.currentData()
-        data = self.full_data.filter_category(category)
+        vision = self.vision_combo.currentData()
+        data = self.full_data.filter_rows(category, vision)
         self.current_data = data
         if self.selected_colname not in data.colnames:
             self.selected_colname = data.colnames[0]
@@ -495,11 +616,12 @@ class FqMapWidget(QtWidgets.QWidget):
             self._update_x_axis(view, data)
             self._draw_lot_separators(view, data)
 
-        self._update_selection_markers()
-        self._update_plot_heights(len(data.colnames))
+        self._update_selection_regions()
+        self._update_plot_heights()
         self._update_summary(
             data,
             category,
+            vision,
             ng_max,
             mean_abs_max,
             std_max,
@@ -507,14 +629,12 @@ class FqMapWidget(QtWidgets.QWidget):
         self._configure_horizontal_scrollbar(data)
         self.vertical_scroll_area.verticalScrollBar().setValue(0)
 
-    def _update_plot_heights(self, row_count: int) -> None:
-        if row_count > 18:
-            plot_height = 210
-        else:
-            plot_height = max(145, 30 + row_count * 12)
+    def _update_plot_heights(self) -> None:
         for view in self.views:
             top_axis_height = 28 if view.metric == "ng_rates" else 0
-            view.card.setFixedHeight(plot_height + top_axis_height)
+            view.card.setFixedHeight(
+                FQ_MAP_PLOT_HEIGHT + top_axis_height
+            )
         self.plots_container.adjustSize()
 
     @staticmethod
@@ -573,15 +693,14 @@ class FqMapWidget(QtWidgets.QWidget):
         self.frame_map.set_context(
             self.selected_colname,
             first_lot,
-            self.selected_column // len(FRAME_NUMBERS),
         )
 
-    def _select_fq_cell(
+    def _select_fq_row(
         self,
         view: FqMapView,
         event: object,
     ) -> None:
-        """クリックしたFQマップセルの選択。"""
+        """クリックしたFQmap検査項目の選択。"""
         scene_position = event.scenePos()
         if not view.plot_widget.sceneBoundingRect().contains(
             scene_position
@@ -598,27 +717,26 @@ class FqMapWidget(QtWidgets.QWidget):
             return
 
         self.selected_colname = data.colnames[row]
-        self.selected_column = column
-        self._update_selection_markers()
+        self._update_selection_regions()
         self.frame_map.set_context(
             self.selected_colname,
             self.horizontal_scrollbar.value(),
-            self.selected_column // len(FRAME_NUMBERS),
         )
         self._update_scope_label(
             data,
             self.category_combo.currentData(),
+            self.vision_combo.currentData(),
         )
 
-    def _update_selection_markers(self) -> None:
-        """3段FQマップの選択マーカー同期。"""
+    def _update_selection_regions(self) -> None:
+        """3段FQマップの選択行同期。"""
         data = self.current_data
         row = data.colnames.index(self.selected_colname)
         for view in self.views:
-            view.selection_item.setData(
-                x=[float(self.selected_column)],
-                y=[float(row)],
+            view.selection_region.setRegion(
+                (float(row) - 0.5, float(row) + 0.5)
             )
+        self.fmap_selection_label.setText(self.selected_colname)
 
     def _update_x_axis(
         self,
@@ -661,12 +779,13 @@ class FqMapWidget(QtWidgets.QWidget):
         self,
         data: FqMapData,
         category: str | None,
+        vision: str | None,
         ng_max: float,
         mean_abs_max: float,
         std_max: float,
     ) -> None:
         self.all_lots_label.setText(f"全{data.lot_count} lot")
-        self._update_scope_label(data, category)
+        self._update_scope_label(data, category, vision)
         self.ng_rate_label.setText(
             f"総合NG率  {data.overall_ng_rate:.3f}%"
             f"   ({data.total_ng:,} NG)"
@@ -680,16 +799,16 @@ class FqMapWidget(QtWidgets.QWidget):
         self,
         data: FqMapData,
         category: str | None,
+        vision: str | None,
     ) -> None:
         """表示範囲と選択検査項目の要約。"""
         category_text = category if category is not None else "全カテゴリ"
-        lot_number = data.column_lots[self.selected_column]
-        frame_number = int(data.frame_numbers[self.selected_column])
+        vision_text = vision if vision is not None else "全vision"
         self.scope_label.setText(
-            f"{category_text}  |  {len(data.colnames)}項目  |  "
+            f"{category_text} / {vision_text}  |  "
+            f"{len(data.colnames)}項目  |  "
             f"{data.total_measurements:,}測定  |  "
-            f"選択 {lot_number} / F{frame_number:02d} / "
-            f"{self.selected_colname}"
+            f"選択項目 {self.selected_colname}"
         )
 
     def _show_hover_details(

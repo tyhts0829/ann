@@ -10,32 +10,189 @@ from pathlib import Path
 
 os.environ.setdefault("QT_API", "pyside6")
 
-from PySide6 import QtWidgets
+from PySide6 import QtCore, QtGui, QtWidgets
 
-from src.analysis.fq_map import FqMapWidget
+from src.analysis.fq_map import (
+    FqMapData,
+    FqMapWidget,
+    build_fq_map_data,
+)
+from src.analysis.frame_map import FrameMapData, build_frame_map_data
+from src.dashboard_config import DASHBOARD_CONFIG
 from src.standardized.quality_data import QualityRepository
+
+
+class DashboardDataWorker(QtCore.QObject):
+    """表示用集計データのバックグラウンド読込。"""
+
+    loaded = QtCore.Signal(object, object)
+    failed = QtCore.Signal(str)
+
+    def __init__(self, parquet_path: Path) -> None:
+        super().__init__()
+        self.parquet_path = parquet_path
+
+    @QtCore.Slot()
+    def load(self) -> None:
+        """FQmap・Fmap集計データの生成。"""
+        repository = QualityRepository(self.parquet_path)
+        try:
+            lot_numbers = tuple(lot_number for lot_number, _ in repository.lots())
+            fq_map_data = build_fq_map_data(
+                repository,
+                lot_numbers,
+            )
+            frame_map_data = build_frame_map_data(
+                repository,
+                lot_numbers,
+            )
+        except Exception as error:
+            self.failed.emit(str(error))
+        else:
+            self.loaded.emit(fq_map_data, frame_map_data)
+        finally:
+            repository.close()
 
 
 class DashboardWindow(QtWidgets.QMainWindow):
     """品質グラフを構成するメイン画面。"""
 
+    data_loaded = QtCore.Signal()
+    data_load_failed = QtCore.Signal(str)
+
     def __init__(self, repository: QualityRepository) -> None:
         super().__init__()
+        self.repository = repository
+        self.fq_map: FqMapWidget | None = None
+        self._loader_thread: QtCore.QThread | None = None
+        self._data_worker: DashboardDataWorker | None = None
+        self._close_requested = False
         self.setWindowTitle("Quality Dashboard")
-        self.resize(1900, 1500)
+        self.resize(
+            DASHBOARD_CONFIG.window_width,
+            DASHBOARD_CONFIG.window_height,
+        )
         self.setMinimumSize(1100, 760)
+        self.close_shortcut = QtGui.QShortcut(
+            QtGui.QKeySequence("Esc"),
+            self,
+        )
+        self.close_shortcut.activated.connect(self.close)
 
         central = QtWidgets.QWidget()
         central.setObjectName("central")
         self.setCentralWidget(central)
 
-        layout = QtWidgets.QVBoxLayout(central)
-        layout.setContentsMargins(12, 12, 12, 10)
-        layout.setSpacing(10)
+        self.content_layout = QtWidgets.QVBoxLayout(central)
+        self.content_layout.setContentsMargins(12, 12, 12, 10)
+        self.content_layout.setSpacing(10)
 
-        self.fq_map = FqMapWidget(repository)
-        layout.addWidget(self.fq_map, stretch=1)
+        self.loading_widget = self._build_loading_widget()
+        self.content_layout.addWidget(self.loading_widget, stretch=1)
         self.setStyleSheet(STYLESHEET)
+        QtCore.QTimer.singleShot(0, self._start_data_load)
+
+    def _build_loading_widget(self) -> QtWidgets.QWidget:
+        """初期集計中の表示。"""
+        container = QtWidgets.QWidget()
+        container.setObjectName("loadingContainer")
+        layout = QtWidgets.QVBoxLayout(container)
+        layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+
+        card = QtWidgets.QFrame()
+        card.setObjectName("loadingCard")
+        card.setFixedWidth(420)
+        card_layout = QtWidgets.QVBoxLayout(card)
+        card_layout.setContentsMargins(32, 28, 32, 28)
+        card_layout.setSpacing(12)
+
+        title = QtWidgets.QLabel("品質データを読み込んでいます")
+        title.setObjectName("loadingTitle")
+        title.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.loading_message = QtWidgets.QLabel(
+            "FQmap・Fmapの集計中です。しばらくお待ちください。"
+        )
+        self.loading_message.setObjectName("loadingMessage")
+        self.loading_message.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.loading_progress = QtWidgets.QProgressBar()
+        self.loading_progress.setObjectName("loadingProgress")
+        self.loading_progress.setRange(0, 0)
+        self.loading_progress.setTextVisible(False)
+
+        card_layout.addWidget(title)
+        card_layout.addWidget(self.loading_message)
+        card_layout.addWidget(self.loading_progress)
+        layout.addWidget(card)
+        return container
+
+    @QtCore.Slot()
+    def _start_data_load(self) -> None:
+        """バックグラウンド集計の開始。"""
+        thread = QtCore.QThread(self)
+        worker = DashboardDataWorker(self.repository.parquet_path)
+        worker.moveToThread(thread)
+
+        thread.started.connect(worker.load)
+        worker.loaded.connect(self._show_dashboard)
+        worker.failed.connect(self._show_load_error)
+        worker.loaded.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.loaded.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(self._clear_loader)
+        thread.finished.connect(thread.deleteLater)
+
+        self._loader_thread = thread
+        self._data_worker = worker
+        thread.start()
+
+    @QtCore.Slot(object, object)
+    def _show_dashboard(
+        self,
+        fq_map_data: FqMapData,
+        frame_map_data: FrameMapData,
+    ) -> None:
+        """集計済みデータによるダッシュボード表示。"""
+        if self._close_requested:
+            return
+        self.fq_map = FqMapWidget(
+            self.repository,
+            fq_map_data,
+            frame_map_data,
+        )
+        self.content_layout.replaceWidget(
+            self.loading_widget,
+            self.fq_map,
+        )
+        self.loading_widget.deleteLater()
+        self.data_loaded.emit()
+
+    @QtCore.Slot(str)
+    def _show_load_error(self, message: str) -> None:
+        """初期集計エラーの表示。"""
+        if self._close_requested:
+            return
+        self.loading_progress.hide()
+        self.loading_message.setText(f"品質データを読み込めませんでした。\n{message}")
+        self.data_load_failed.emit(message)
+
+    @QtCore.Slot()
+    def _clear_loader(self) -> None:
+        """読込スレッド参照の解放。"""
+        self._loader_thread = None
+        self._data_worker = None
+        if self._close_requested:
+            self.close()
+            QtWidgets.QApplication.quit()
+
+    def closeEvent(self, event: QtGui.QCloseEvent) -> None:
+        """読込中の安全なウィンドウ終了。"""
+        if self._loader_thread is not None and self._loader_thread.isRunning():
+            self._close_requested = True
+            self.hide()
+            event.ignore()
+            return
+        super().closeEvent(event)
 
 
 STYLESHEET = """
@@ -43,13 +200,63 @@ QWidget#central {
     background: #f3f5f7;
     color: #20262f;
 }
-QFrame#toolbarCard {
+QWidget#loadingContainer {
+    background: #f3f5f7;
+}
+QFrame#loadingCard {
     background: #ffffff;
     border: 1px solid #d5dbe3;
+}
+QLabel#loadingTitle {
+    color: #20262f;
+    font-size: 17px;
+    font-weight: 700;
+}
+QLabel#loadingMessage {
+    color: #667080;
+    font-size: 12px;
+}
+QProgressBar#loadingProgress {
+    background: #e4e8ed;
+    border: 1px solid #c2c9d2;
+    height: 8px;
+}
+QProgressBar#loadingProgress::chunk {
+    background: #3a9a93;
+}
+QFrame#mapCard {
+    background: #ffffff;
+    border: 1px solid #d5dbe3;
+}
+QWidget#toolbarCard {
+    background: #ffffff;
+    border: none;
+    border-bottom: 1px solid #d5dbe3;
 }
 QFrame#chartCard {
     background: #ffffff;
     border: none;
+}
+QLabel#mapSectionTitle {
+    color: #20262f;
+    font-size: 16px;
+    font-weight: 700;
+}
+QWidget#frameMapLabelPanel {
+    background: #ffffff;
+}
+QLabel#frameMapContextCaption {
+    color: #667080;
+    font-size: 10px;
+}
+QLabel#frameMapSelectionLabel {
+    color: #294d91;
+    font-size: 11px;
+    font-weight: 700;
+}
+QLabel#frameMapMetricLabel {
+    color: #667080;
+    font-size: 11px;
 }
 QLabel#fieldLabel {
     color: #667080;
@@ -68,7 +275,8 @@ QLabel#scopeLabel {
     color: #667080;
     font-size: 12px;
 }
-QComboBox#categoryCombo {
+QComboBox#categoryCombo,
+QComboBox#visionCombo {
     color: #20262f;
     background: #ffffff;
     border: 1px solid #aeb7c4;
@@ -76,14 +284,17 @@ QComboBox#categoryCombo {
     min-height: 22px;
     font-size: 12px;
 }
-QComboBox#categoryCombo:hover {
+QComboBox#categoryCombo:hover,
+QComboBox#visionCombo:hover {
     border-color: #607086;
 }
-QComboBox#categoryCombo::drop-down {
+QComboBox#categoryCombo::drop-down,
+QComboBox#visionCombo::drop-down {
     border: none;
     width: 26px;
 }
-QComboBox#categoryCombo QAbstractItemView {
+QComboBox#categoryCombo QAbstractItemView,
+QComboBox#visionCombo QAbstractItemView {
     color: #20262f;
     background: #ffffff;
     border: 1px solid #aeb7c4;
@@ -141,6 +352,9 @@ QScrollArea#heatmapScrollArea,
 QWidget#plotsContainer {
     background: #ffffff;
     border: none;
+}
+QWidget#histogramReservedSpace {
+    background: #f3f5f7;
 }
 QScrollArea#heatmapScrollArea QScrollBar:vertical {
     background: #e4e8ed;

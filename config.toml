@@ -1,0 +1,21 @@
+[dashboard]
+# 一度に表示するlot数
+visible_lots = 8
+
+# 起動時のウィンドウサイズ
+window_width = 1900
+window_height = 1550
+
+[layout]
+# 各高さ = height_unit × 対応する比率
+height_unit = 160
+fqmap_height_ratio = 4
+fmap_height_ratio = 2
+histogram_height_ratio = 2
+
+# FQmapを構成する各ヒートマップの高さ
+fqmap_plot_height = 185
+
+# FQmapとFmapで共通利用する左右の領域幅
+left_label_width = 205
+color_bar_width = 90

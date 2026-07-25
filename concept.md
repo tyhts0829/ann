@@ -87,7 +87,7 @@ colname
 
 1. `src/raw/generate_quality_data.py`で生成し、`data/raw/quality_data_100lots.parquet`へ保存する。この段階では`spec_position`と`spec_usage`を持たない。通常変動はlotとFrameNoを連続時間軸、PositionXとPositionYを空間軸としたfractal 3D Perlin noiseを基調とし、複数octaveの緩やかな工程変動と局所変動を重ねる。短周期や座標軸に沿う人工的な模様を避けるため、Perlinの周期は4096、lacunarityは2.071とし、入力座標を回転してから評価する。
 2. `src/standardized/standardize_quality_data.py`で規格正規化列を追加し、`data/standardized/quality_data_100lots.parquet`へ保存する。
-3. FQマップは`src/analysis/fq_map.py`、フレームマップは`src/analysis/frame_map.py`に分けて実装し、`dashboard.py`が両者を構成する。
+3. FQmapは`src/analysis/fq_map.py`、Fmapは`src/analysis/frame_map.py`に分けて実装し、`dashboard.py`が両者を構成する。
 
 ```bash
 .venv/bin/python src/raw/generate_quality_data.py
@@ -144,25 +144,31 @@ fはFrameNoである。
 - 正常ロット、類似異常ロット、対象ロットの3者を上記と同様のビューで比較
 - 総合類似度と、その内訳を表示
 
-現在の概要画面では、各`lot_number × FrameNo × colname`について次の3段をFQマップと呼ぶ。
+現在の概要画面では、各`lot_number × FrameNo × colname`について次の3段をFQmapと呼ぶ。
 
 1. NG率（Reds相当）
 2. `spec_position`または`spec_usage`の平均（RdBu_r相当）
 3. `spec_position`または`spec_usage`の母標準偏差（Purples相当）
 
-各列は`FrameNo`単位で集計するが、x tick labelにはロット番号だけを表示する。ロット番号は最上段のFQマップ上側に1回だけ表示し、2段目と3段目には重複表示しない。一度に5ロットを表示し、全100ロットは横スクロールで移動する。FQマップは低い高さの概要表示とし、`meta_category`が`None`の場合は全項目、それ以外は選択カテゴリの`colname`だけを表示する。
+各列は`FrameNo`単位で集計するが、x tick labelにはロット番号だけを表示する。ロット番号は最上段のFQmap上側に1回だけ表示し、2段目と3段目には重複表示しない。一度に5ロットを表示し、全100ロットは横スクロールで移動する。FQmapは低い高さの概要表示とし、`meta_category`と`vision`で`colname`を絞り込む。
 
-raw、standardized、FQマップのすべてで、末尾に`_v1`、`_v2`、`_v3`を持つ45個の一意な`colname`を維持する。全カテゴリ表示では3 visionの行をベース検査項目単位でまとめて目盛表示し、カテゴリを選択した場合は各colnameを個別表示する。セル選択時と詳細表示では常に完全なvision別colnameを示す。
+raw、standardized、FQmapのすべてで、末尾に`_v1`、`_v2`、`_v3`を持つ45個の一意な`colname`を維持する。全カテゴリ表示では3 visionの行をベース検査項目単位でまとめて目盛表示し、絞り込み時は各colnameを個別表示する。項目選択時と詳細表示では常に完全なvision別colnameを示す。
 
-FQマップの下には、選択したセルの行に対応するvision別検査項目について、`PositionX = 1～24`、`PositionY = 1～12`のフレームマップを次の3段で表示する。
+FQmapでは`meta_category`と`vision`を組み合わせて検査項目を絞り込める。FQmap上の選択は特定セルではなく検査項目を対象とし、3段すべてで選択行全体を強調表示する。
+
+FQmapの下には`Fmap`の名称と選択中のvision別検査項目を明示し、その検査項目について`PositionX = 1～24`、`PositionY = 1～12`の製品位置マップを次の3段で表示する。
 
 1. NG率（Reds相当）
 2. `spec_position`または`spec_usage`の平均（RdBu_r相当）
 3. `spec_position`または`spec_usage`の母標準偏差（Purples相当）
 
-フレームマップは1ロット内の24フレームを製品座標ごとに集計し、FQマップと同じ横スクロール位置の5ロットを並べる。各製品セルの境界には白いグリッド線を表示する。ウィンドウ幅に応じて行高を計算し、24×12セルの2:1比率を保ったまま5ロットを隙間なく配置する。3種類のどのFQマップをクリックしても、ダイヤ型の選択マーカーとフレームマップ対象項目を同期する。選択ロットはフレームマップ上端の細いインディゴ線で控えめに示す。
+Fmapは1ロット内の24フレームを製品座標ごとに集計し、FQmapと同じ横スクロール位置の5ロットを並べる。FQmapの1 lotとFmapの1 lotは同じ横幅とし、各製品セルの境界には白いグリッド線を表示する。FQmapとFmapはそれぞれ固定高とし、検査項目数によって内容が収まらない場合はFQmap内部だけを縦スクロールする。FQmap名とフィルターはFQmap枠内、Fmap名と選択中の検査項目はFmap左側の項目欄に表示し、独立した見出し行を設けない。画面上の枠はFQmapとFmapの2つとする。Fmapの3行も固定高で隙間なく配置する。3種類のどのFQmapをクリックしても、選択行とFmapの対象検査項目を同期する。
 
-画面はライトテーマとし、3段のFQマップ間にカード枠や区切り余白を設けない。
+画面はライトテーマとし、3段のFQmap間にカード枠や区切り余白を設けない。FQmap、Fmap、将来のHistogram領域の高さ比はおよそ4:3:2とし、FQmapの3段を可能な限り同時に表示する。Escキーでウィンドウを閉じる。
+
+表示lot数、起動時のウィンドウサイズ、FQmap・Fmap・Histogramの高さ比、FQmap各段の高さ、左右のラベル領域幅はルートの`config.toml`で設定する。変更は次回起動時に反映する。
+
+起動時のFQmap・Fmap集計はバックグラウンドで実行し、完了までは進捗表示を出してウィンドウの応答を維持する。
 
 不良は規格不適合、異常は過去の通常状態からの逸脱として定義し、それらは必ずしも一致しない。
 過去の通常状態は、対象ロットを含まない過去のNロットから計算する。

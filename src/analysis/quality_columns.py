@@ -25,3 +25,4 @@ SPEC_ORDER = tuple(
 )
 
 CATEGORY_ORDER = ("異物", "リード", "PKGサイズ", "標印", "欠陥")
+VISION_ORDER = ("vision_1", "vision_2", "vision_3")

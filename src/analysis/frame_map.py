@@ -13,17 +13,16 @@ from PySide6 import QtCore, QtWidgets
 
 from src.analysis.map_palettes import MAP_DEFINITIONS, make_color_map
 from src.analysis.quality_columns import SPEC_ORDER
+from src.dashboard_config import DASHBOARD_CONFIG
 from src.standardized.quality_data import QualityRepository
-
 
 POSITION_X = np.arange(1, 25)
 POSITION_Y = np.arange(1, 13)
-VISIBLE_LOTS = 5
-LEFT_LABEL_WIDTH = 205
-COLOR_BAR_WIDTH = 90
-DEFAULT_ROW_HEIGHT = 126
-MIN_ROW_HEIGHT = 112
-MAX_ROW_HEIGHT = 180
+VISIBLE_LOTS = DASHBOARD_CONFIG.visible_lots
+LEFT_LABEL_WIDTH = DASHBOARD_CONFIG.left_label_width
+COLOR_BAR_WIDTH = DASHBOARD_CONFIG.color_bar_width
+FRAME_MAP_HEIGHT = DASHBOARD_CONFIG.fmap_height
+DEFAULT_ROW_HEIGHT = FRAME_MAP_HEIGHT // len(MAP_DEFINITIONS)
 
 
 @dataclass(frozen=True)
@@ -64,9 +63,7 @@ def build_frame_map_data(
 
     frame = repository.metrics_by_colname_position(lot_numbers)
     available = set(frame["colname"])
-    colnames = tuple(
-        colname for colname in SPEC_ORDER if colname in available
-    )
+    colnames = tuple(colname for colname in SPEC_ORDER if colname in available)
     return FrameMapData(
         colnames=colnames,
         lot_numbers=lot_numbers,
@@ -106,9 +103,7 @@ def _position_matrices(
     for colname in colnames:
         subset = frame[frame["colname"] == colname]
         matrix = (
-            subset.set_index(
-                ["lot_number", "PositionY", "PositionX"]
-            )[value_column]
+            subset.set_index(["lot_number", "PositionY", "PositionX"])[value_column]
             .reindex(index)
             .to_numpy(dtype=float)
             .reshape(
@@ -128,29 +123,39 @@ class FrameMapWidget(QtWidgets.QWidget):
         self,
         repository: QualityRepository,
         lot_numbers: tuple[str, ...],
+        data: FrameMapData | None = None,
     ) -> None:
         super().__init__()
-        self.data = build_frame_map_data(repository, lot_numbers)
+        self.data = (
+            build_frame_map_data(repository, lot_numbers) if data is None else data
+        )
         self.rows: list[FrameMapRow] = []
         self.selected_colname: str | None = None
-        self._row_height = DEFAULT_ROW_HEIGHT
+        self.selection_label = QtWidgets.QLabel()
+        self.selection_label.setObjectName("frameMapSelectionLabel")
+        self.selection_label.setWordWrap(True)
         self.setSizePolicy(
             QtWidgets.QSizePolicy.Policy.Expanding,
             QtWidgets.QSizePolicy.Policy.Fixed,
         )
         self._build_ui()
-        self._set_row_height(DEFAULT_ROW_HEIGHT)
+        self.setFixedHeight(FRAME_MAP_HEIGHT)
 
     def _build_ui(self) -> None:
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
-        for metric, label, colors in MAP_DEFINITIONS:
+        base_height, remainder = divmod(
+            FRAME_MAP_HEIGHT,
+            len(MAP_DEFINITIONS),
+        )
+        for index, (metric, label, colors) in enumerate(MAP_DEFINITIONS):
             row = self._build_row(
                 metric,
                 label,
                 make_color_map(colors),
+                base_height + (index < remainder),
             )
             self.rows.append(row)
             layout.addWidget(row.widget)
@@ -160,18 +165,17 @@ class FrameMapWidget(QtWidgets.QWidget):
         metric: str,
         label: str,
         color_map: pg.ColorMap,
+        row_height: int,
     ) -> FrameMapRow:
-        """表示中5 lotのPositionマップ行生成。"""
+        """表示中lotのPositionマップ行生成。"""
         widget = QtWidgets.QWidget()
         widget.setObjectName("frameMapRow")
-        widget.setFixedHeight(self._row_height)
+        widget.setFixedHeight(row_height)
         layout = QtWidgets.QHBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        left_spacer = QtWidgets.QWidget()
-        left_spacer.setFixedWidth(LEFT_LABEL_WIDTH)
-        layout.addWidget(left_spacer)
+        layout.addWidget(self._build_row_label(metric, label))
 
         plot_widgets = []
         image_items = []
@@ -183,7 +187,6 @@ class FrameMapWidget(QtWidgets.QWidget):
             plot_item.hideAxis("left")
             plot_item.hideAxis("bottom")
             plot_item.setMouseEnabled(x=False, y=False)
-            plot_item.getViewBox().setAspectLocked(True)
             plot_item.setXRange(0.5, 24.5, padding=0.0)
             plot_item.setYRange(0.5, 12.5, padding=0.0)
 
@@ -222,23 +225,34 @@ class FrameMapWidget(QtWidgets.QWidget):
             color_bar=color_bar,
         )
 
-    def resizeEvent(self, event: object) -> None:
-        """表示幅に合わせたフレームマップ高の更新。"""
-        super().resizeEvent(event)
-        map_width = (
-            self.width() - LEFT_LABEL_WIDTH - COLOR_BAR_WIDTH
-        ) / VISIBLE_LOTS
-        row_height = round(map_width / 2.0) + 2
-        self._set_row_height(
-            max(MIN_ROW_HEIGHT, min(MAX_ROW_HEIGHT, row_height))
-        )
+    def _build_row_label(
+        self,
+        metric: str,
+        label: str,
+    ) -> QtWidgets.QWidget:
+        """Fmapの項目情報表示。"""
+        panel = QtWidgets.QWidget()
+        panel.setObjectName("frameMapLabelPanel")
+        panel.setFixedWidth(LEFT_LABEL_WIDTH)
+        layout = QtWidgets.QVBoxLayout(panel)
+        layout.setContentsMargins(14, 7, 10, 7)
+        layout.setSpacing(2)
 
-    def _set_row_height(self, height: int) -> None:
-        """24×12セルの縦横比を保つ行高設定。"""
-        self._row_height = height
-        for row in self.rows:
-            row.widget.setFixedHeight(height)
-        self.setFixedHeight(height * len(self.rows))
+        if metric == "ng_rates":
+            title = QtWidgets.QLabel("Fmap")
+            title.setObjectName("mapSectionTitle")
+            caption = QtWidgets.QLabel("選択中の検査項目")
+            caption.setObjectName("frameMapContextCaption")
+            layout.addWidget(title)
+            layout.addWidget(caption)
+            layout.addWidget(self.selection_label)
+        else:
+            metric_label = QtWidgets.QLabel(label)
+            metric_label.setObjectName("frameMapMetricLabel")
+            metric_label.setWordWrap(True)
+            layout.addWidget(metric_label)
+        layout.addStretch()
+        return panel
 
     @staticmethod
     def _add_white_grid(plot_item: pg.PlotItem) -> None:
@@ -267,13 +281,13 @@ class FrameMapWidget(QtWidgets.QWidget):
         self,
         colname: str,
         first_lot: int,
-        selected_lot: int,
     ) -> None:
         """選択項目と表示lot範囲の反映。"""
+        self.selection_label.setText(colname)
         if self.selected_colname != colname:
             self.selected_colname = colname
             self._configure_levels(colname)
-        self._render(first_lot, selected_lot)
+        self._render(first_lot)
 
     def _configure_levels(self, colname: str) -> None:
         """選択検査項目の色範囲設定。"""
@@ -302,7 +316,7 @@ class FrameMapWidget(QtWidgets.QWidget):
             row.levels = levels[row.metric]
             row.color_bar.setLevels(row.levels)
 
-    def _render(self, first_lot: int, selected_lot: int) -> None:
+    def _render(self, first_lot: int) -> None:
         """横スクロール位置に対応する5 lotのマップ表示。"""
         if self.selected_colname is None:
             return
@@ -327,11 +341,6 @@ class FrameMapWidget(QtWidgets.QWidget):
                     )
                 )
                 plot_widget.getPlotItem().getViewBox().setBorder(None)
-                plot_widget.setStyleSheet(
-                    "border-top: 2px solid #3157a4;"
-                    if lot_index == selected_lot
-                    else "border-top: 2px solid transparent;"
-                )
 
     @staticmethod
     def _nice_upper(max_value: float, minimum: float) -> float:
