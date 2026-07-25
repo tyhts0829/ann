@@ -16,6 +16,11 @@ from src.analysis.frame_map import (
     FrameMapWidget,
     VISIBLE_LOTS,
 )
+from src.analysis.kde import (
+    KdeData,
+    KdeWidget,
+    build_kde_data,
+)
 from src.analysis.map_palettes import MAP_DEFINITIONS, make_color_map
 from src.analysis.quality_columns import (
     CATEGORY_ORDER,
@@ -30,7 +35,7 @@ FRAME_NUMBERS = np.arange(1, 25)
 VISIBLE_COLUMNS = len(FRAME_NUMBERS) * VISIBLE_LOTS
 FQ_MAP_SECTION_HEIGHT = DASHBOARD_CONFIG.fqmap_height
 FMAP_SECTION_HEIGHT = DASHBOARD_CONFIG.fmap_height
-HISTOGRAM_RESERVED_HEIGHT = DASHBOARD_CONFIG.histogram_height
+KDE_SECTION_HEIGHT = DASHBOARD_CONFIG.kde_height
 FQ_MAP_PLOT_HEIGHT = DASHBOARD_CONFIG.fqmap_plot_height
 
 
@@ -233,6 +238,7 @@ class FqMapWidget(QtWidgets.QWidget):
         repository: QualityRepository,
         full_data: FqMapData | None = None,
         frame_map_data: FrameMapData | None = None,
+        kde_data: KdeData | None = None,
     ) -> None:
         super().__init__()
         self.repository = repository
@@ -242,6 +248,14 @@ class FqMapWidget(QtWidgets.QWidget):
             else full_data
         )
         self.frame_map_data = frame_map_data
+        self.kde_data = (
+            build_kde_data(
+                repository,
+                self.full_data.lot_numbers,
+            )
+            if kde_data is None
+            else kde_data
+        )
         self.current_data = self.full_data
         self.selected_colname = self.full_data.colnames[0]
         self.views: list[FqMapView] = []
@@ -255,18 +269,12 @@ class FqMapWidget(QtWidgets.QWidget):
         layout.setSpacing(6)
         self.fq_map_section = self._build_fq_map_section()
         self.fmap_section = self._build_fmap_section()
+        self.kde_section = self._build_kde_section()
         layout.addWidget(self.fq_map_section)
         layout.addWidget(self.fmap_section)
+        layout.addWidget(self.kde_section)
         layout.addLayout(self._build_horizontal_navigation())
         layout.addWidget(self._build_footer())
-        self.histogram_reserved_space = QtWidgets.QWidget()
-        self.histogram_reserved_space.setObjectName(
-            "histogramReservedSpace"
-        )
-        self.histogram_reserved_space.setFixedHeight(
-            HISTOGRAM_RESERVED_HEIGHT
-        )
-        layout.addWidget(self.histogram_reserved_space)
         layout.addStretch()
 
     def _build_toolbar(self) -> QtWidgets.QWidget:
@@ -382,6 +390,17 @@ class FqMapWidget(QtWidgets.QWidget):
         )
         self.fmap_selection_label = self.frame_map.selection_label
         layout.addWidget(self.frame_map)
+        return section
+
+    def _build_kde_section(self) -> QtWidgets.QWidget:
+        """固定高のKDEセクション。"""
+        section = QtWidgets.QFrame()
+        section.setObjectName("mapCard")
+        section.setFixedHeight(KDE_SECTION_HEIGHT)
+        layout = QtWidgets.QVBoxLayout(section)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.kde = KdeWidget(self.kde_data)
+        layout.addWidget(self.kde)
         return section
 
     def _build_fq_map_view(
@@ -694,6 +713,10 @@ class FqMapWidget(QtWidgets.QWidget):
             self.selected_colname,
             first_lot,
         )
+        self.kde.set_context(
+            self.selected_colname,
+            first_lot,
+        )
 
     def _select_fq_row(
         self,
@@ -737,6 +760,10 @@ class FqMapWidget(QtWidgets.QWidget):
                 (float(row) - 0.5, float(row) + 0.5)
             )
         self.fmap_selection_label.setText(self.selected_colname)
+        self.kde.set_context(
+            self.selected_colname,
+            self.horizontal_scrollbar.value(),
+        )
 
     def _update_x_axis(
         self,

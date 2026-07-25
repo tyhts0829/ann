@@ -9,12 +9,16 @@ window_height = 1550
 [layout]
 # 各高さ = height_unit × 対応する比率
 height_unit = 160
-fqmap_height_ratio = 4
+fqmap_height_ratio = 5
 fmap_height_ratio = 2
-histogram_height_ratio = 2
+kde_height_ratio = 1
 
 # FQmapを構成する各ヒートマップの高さ
 fqmap_plot_height = 185
+
+# KDEの計算設定
+kde_bins = 60
+kde_bandwidth_bins = 1.5
 
 # FQmapとFmapで共通利用する左右の領域幅
 left_label_width = 205

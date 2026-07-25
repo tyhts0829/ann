@@ -87,7 +87,7 @@ colname
 
 1. `src/raw/generate_quality_data.py`で生成し、`data/raw/quality_data_100lots.parquet`へ保存する。この段階では`spec_position`と`spec_usage`を持たない。通常変動はlotとFrameNoを連続時間軸、PositionXとPositionYを空間軸としたfractal 3D Perlin noiseを基調とし、複数octaveの緩やかな工程変動と局所変動を重ねる。短周期や座標軸に沿う人工的な模様を避けるため、Perlinの周期は4096、lacunarityは2.071とし、入力座標を回転してから評価する。
 2. `src/standardized/standardize_quality_data.py`で規格正規化列を追加し、`data/standardized/quality_data_100lots.parquet`へ保存する。
-3. FQmapは`src/analysis/fq_map.py`、Fmapは`src/analysis/frame_map.py`に分けて実装し、`dashboard.py`が両者を構成する。
+3. FQmapは`src/analysis/fq_map.py`、Fmapは`src/analysis/frame_map.py`、KDEは`src/analysis/kde.py`に分けて実装し、`dashboard.py`が3者を構成する。
 
 ```bash
 .venv/bin/python src/raw/generate_quality_data.py
@@ -162,13 +162,15 @@ FQmapの下には`Fmap`の名称と選択中のvision別検査項目を明示し
 2. `spec_position`または`spec_usage`の平均（RdBu_r相当）
 3. `spec_position`または`spec_usage`の母標準偏差（Purples相当）
 
-Fmapは1ロット内の24フレームを製品座標ごとに集計し、FQmapと同じ横スクロール位置の5ロットを並べる。FQmapの1 lotとFmapの1 lotは同じ横幅とし、各製品セルの境界には白いグリッド線を表示する。FQmapとFmapはそれぞれ固定高とし、検査項目数によって内容が収まらない場合はFQmap内部だけを縦スクロールする。FQmap名とフィルターはFQmap枠内、Fmap名と選択中の検査項目はFmap左側の項目欄に表示し、独立した見出し行を設けない。画面上の枠はFQmapとFmapの2つとする。Fmapの3行も固定高で隙間なく配置する。3種類のどのFQmapをクリックしても、選択行とFmapの対象検査項目を同期する。
+Fmapは1ロット内の24フレームを製品座標ごとに集計し、FQmapと同じ横スクロール位置の設定数のlotを並べる。FQmapの1 lotとFmapの1 lotは同じ横幅とし、各製品セルの境界には白いグリッド線を表示する。FQmapとFmapはそれぞれ固定高とし、検査項目数によって内容が収まらない場合はFQmap内部だけを縦スクロールする。FQmap名とフィルターはFQmap枠内、Fmap名と選択中の検査項目はFmap左側の項目欄に表示し、独立した見出し行を設けない。Fmapの3行も固定高で隙間なく配置する。3種類のどのFQmapをクリックしても、選択行とFmapの対象検査項目を同期する。
 
-画面はライトテーマとし、3段のFQmap間にカード枠や区切り余白を設けない。FQmap、Fmap、将来のHistogram領域の高さ比はおよそ4:3:2とし、FQmapの3段を可能な限り同時に表示する。Escキーでウィンドウを閉じる。
+Fmapの直下には選択中のvision別検査項目について、表示中の各lotの生の測定値分布をKDEとしてlotごとに表示する。各KDEは対応するFmapのlotと同じ横幅で並べ、FQmap・Fmapと横スクロール位置を同期する。同じ検査項目では全lotでx軸・y軸の尺度を共通にする。`limmin`と`limmax`が定義されている場合は、それぞれ規格下限・規格上限を縦線で示し、片側規格では存在する規格線だけを表示する。
 
-表示lot数、起動時のウィンドウサイズ、FQmap・Fmap・Histogramの高さ比、FQmap各段の高さ、左右のラベル領域幅はルートの`config.toml`で設定する。変更は次回起動時に反映する。
+画面はライトテーマとし、3段のFQmap間にカード枠や区切り余白を設けない。FQmap、Fmap、KDEの高さ比は`config.toml`の設定に従い、FQmapの3段を可能な限り同時に表示する。Escキーでウィンドウを閉じる。
 
-起動時のFQmap・Fmap集計はバックグラウンドで実行し、完了までは進捗表示を出してウィンドウの応答を維持する。
+表示lot数、起動時のウィンドウサイズ、FQmap・Fmap・KDEの高さ比、FQmap各段の高さ、KDEのbin数と帯域幅、左右のラベル領域幅はルートの`config.toml`で設定する。変更は次回起動時に反映する。
+
+起動時のFQmap・Fmap・lot別KDE集計はバックグラウンドで事前実行し、完了までは進捗表示を出してウィンドウの応答を維持する。
 
 不良は規格不適合、異常は過去の通常状態からの逸脱として定義し、それらは必ずしも一致しない。
 過去の通常状態は、対象ロットを含まない過去のNロットから計算する。

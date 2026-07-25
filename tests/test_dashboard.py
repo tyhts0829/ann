@@ -12,7 +12,7 @@ from dashboard import DashboardWindow, STYLESHEET
 from src.analysis.fq_map import (
     FMAP_SECTION_HEIGHT,
     FQ_MAP_SECTION_HEIGHT,
-    HISTOGRAM_RESERVED_HEIGHT,
+    KDE_SECTION_HEIGHT,
     build_fq_map_data,
 )
 from src.analysis.frame_map import (
@@ -20,6 +20,7 @@ from src.analysis.frame_map import (
     VISIBLE_LOTS,
     build_frame_map_data,
 )
+from src.analysis.kde import build_kde_data
 from src.dashboard_config import (
     CONFIG_PATH,
     DASHBOARD_CONFIG,
@@ -175,7 +176,7 @@ def test_dashboard_config() -> None:
     assert VISIBLE_LOTS == config.visible_lots
     assert FQ_MAP_SECTION_HEIGHT == config.fqmap_height
     assert FMAP_SECTION_HEIGHT == config.fmap_height
-    assert HISTOGRAM_RESERVED_HEIGHT == config.histogram_height
+    assert KDE_SECTION_HEIGHT == config.kde_height
 
 
 def test_latest_lot_fq_map(repository: QualityRepository) -> None:
@@ -206,6 +207,34 @@ def test_frame_map_data(repository: QualityRepository) -> None:
     assert np.std(data.ng_rates[-1, -1]) > 1.0
 
 
+def test_kde_data(repository: QualityRepository) -> None:
+    data = build_kde_data(repository)
+
+    assert data.x_values.shape == (
+        45,
+        DASHBOARD_CONFIG.kde_bins,
+    )
+    assert data.densities.shape == (
+        45,
+        100,
+        DASHBOARD_CONFIG.kde_bins,
+    )
+    assert data.sample_counts.shape == (45, 100)
+    assert np.all(data.sample_counts == 6_912)
+    assert int(data.sample_counts.sum()) == 31_104_000
+    assert np.all(np.diff(data.x_values, axis=1) > 0)
+    assert np.isfinite(data.densities).all()
+    assert np.all(data.densities >= 0.0)
+
+    bin_widths = data.x_values[:, 1] - data.x_values[:, 0]
+    integrals = data.densities.sum(axis=2) * bin_widths[:, None]
+    assert np.allclose(integrals, 1.0)
+
+    work_x = data.colname_index("Work_Xw_v2")
+    assert data.spec_lower[work_x] == pytest.approx(3.9)
+    assert data.spec_upper[work_x] == pytest.approx(4.1)
+
+
 def test_dashboard_window(qtbot, repository: QualityRepository) -> None:
     window = DashboardWindow(repository)
     qtbot.addWidget(window)
@@ -224,7 +253,7 @@ def test_dashboard_window(qtbot, repository: QualityRepository) -> None:
         for label in fq_map.findChildren(QtWidgets.QLabel)
         if label.objectName() == "mapSectionTitle"
     }
-    assert section_texts == {"FQmap", "Fmap"}
+    assert section_texts == {"FQmap", "Fmap", "KDE"}
     assert len(fq_map.views) == 3
     assert len(fq_map.frame_map.rows) == 3
     assert fq_map.plots_container.layout().spacing() == 0
@@ -237,11 +266,49 @@ def test_dashboard_window(qtbot, repository: QualityRepository) -> None:
             for frame in fq_map.findChildren(QtWidgets.QFrame)
             if frame.objectName() == "mapCard"
         ]
-    ) == 2
-    assert (
-        fq_map.histogram_reserved_space.height()
-        == HISTOGRAM_RESERVED_HEIGHT
+    ) == 3
+    assert fq_map.kde_section.height() == KDE_SECTION_HEIGHT
+    assert fq_map.kde.current_colname == "Foreign_Length_Long_v1"
+    assert fq_map.kde.selection_label.text() == (
+        "Foreign_Length_Long_v1"
     )
+    assert len(fq_map.kde.plot_widgets) == VISIBLE_LOTS
+    assert fq_map.kde.current_lot_numbers == (
+        fq_map.full_data.lot_numbers[-VISIBLE_LOTS:]
+    )
+    initial_row = fq_map.kde.data.colname_index(
+        "Foreign_Length_Long_v1"
+    )
+    initial_first_lot = len(fq_map.kde.data.lot_numbers) - VISIBLE_LOTS
+    for offset, curve in enumerate(fq_map.kde.curve_items):
+        x_values, densities = curve.getData()
+        assert np.allclose(
+            x_values,
+            fq_map.kde.data.x_values[initial_row],
+        )
+        assert np.allclose(
+            densities,
+            fq_map.kde.data.densities[
+                initial_row,
+                initial_first_lot + offset,
+            ],
+        )
+    assert all(not line.isVisible() for line in fq_map.kde.lower_lines)
+    assert all(line.isVisible() for line in fq_map.kde.upper_lines)
+    assert all(
+        line.value() == pytest.approx(0.3)
+        for line in fq_map.kde.upper_lines
+    )
+    assert not any(
+        isinstance(item, pg.BarGraphItem)
+        for plot_item in fq_map.kde.plot_items
+        for item in plot_item.items
+    )
+    assert (
+        f"表示中 {VISIBLE_LOTS} lot"
+        in fq_map.kde.summary_label.text()
+    )
+    assert "各 6,912測定" in fq_map.kde.summary_label.text()
     assert (
         fq_map.vertical_scroll_area.parentWidget()
         is fq_map.fq_map_section
@@ -274,7 +341,14 @@ def test_dashboard_window(qtbot, repository: QualityRepository) -> None:
         .sceneBoundingRect()
         .width()
     )
+    kde_lot_width = (
+        fq_map.kde.plot_items[0]
+        .getViewBox()
+        .sceneBoundingRect()
+        .width()
+    )
     assert fmap_lot_width == pytest.approx(fq_lot_width, rel=0.01)
+    assert kde_lot_width == pytest.approx(fmap_lot_width, rel=0.01)
     grid_lines = [
         item
         for item in fq_map.frame_map.rows[0]
@@ -361,7 +435,6 @@ def test_dashboard_window(qtbot, repository: QualityRepository) -> None:
         )
         for view in fq_map.views
     )
-
     fq_map.horizontal_scrollbar.setValue(0)
     assert all(
         view.plot_item.viewRange()[0]
@@ -371,6 +444,13 @@ def test_dashboard_window(qtbot, repository: QualityRepository) -> None:
     assert np.allclose(
         fq_map.frame_map.rows[0].image_items[0].image,
         fq_map.frame_map.data.ng_rates[0, 0],
+    )
+    assert fq_map.kde.current_lot_numbers == (
+        fq_map.full_data.lot_numbers[:VISIBLE_LOTS]
+    )
+    assert np.allclose(
+        fq_map.kde.curve_items[0].getData()[1],
+        fq_map.kde.data.densities[initial_row, 0],
     )
 
     selected_view = fq_map.views[0]
@@ -392,6 +472,23 @@ def test_dashboard_window(qtbot, repository: QualityRepository) -> None:
         for view in fq_map.views
     )
     assert fq_map.fmap_selection_label.text().endswith("Work_Xw_v2")
+    assert fq_map.kde.current_colname == "Work_Xw_v2"
+    assert fq_map.kde.selection_label.text() == "Work_Xw_v2"
+    assert all(line.isVisible() for line in fq_map.kde.lower_lines)
+    assert all(line.isVisible() for line in fq_map.kde.upper_lines)
+    assert all(
+        line.value() == pytest.approx(3.9)
+        for line in fq_map.kde.lower_lines
+    )
+    assert all(
+        line.value() == pytest.approx(4.1)
+        for line in fq_map.kde.upper_lines
+    )
+    kde_work_x_index = fq_map.kde.data.colname_index("Work_Xw_v2")
+    assert np.allclose(
+        fq_map.kde.curve_items[0].getData()[1],
+        fq_map.kde.data.densities[kde_work_x_index, 0],
+    )
     work_x_index = fq_map.frame_map.data.colname_index("Work_Xw_v2")
     assert np.allclose(
         fq_map.frame_map.rows[0].image_items[0].image,
@@ -425,6 +522,9 @@ def test_dashboard_window(qtbot, repository: QualityRepository) -> None:
     assert fq_map.fmap_selection_label.text().endswith(
         "Foreign_Length_Long_v2"
     )
+    assert fq_map.kde.current_colname == (
+        "Foreign_Length_Long_v2"
+    )
     qtbot.wait(50)
     assert [view.card.height() for view in fq_map.views] == [
         DASHBOARD_CONFIG.fqmap_plot_height + 28,
@@ -453,10 +553,7 @@ def test_dashboard_window(qtbot, repository: QualityRepository) -> None:
     )
     assert fq_map.fq_map_section.height() == FQ_MAP_SECTION_HEIGHT
     assert fq_map.fmap_section.height() == FMAP_SECTION_HEIGHT
-    assert (
-        fq_map.histogram_reserved_space.height()
-        == HISTOGRAM_RESERVED_HEIGHT
-    )
+    assert fq_map.kde_section.height() == KDE_SECTION_HEIGHT
 
     window.resize(1_600, 1_550)
     qtbot.wait(100)

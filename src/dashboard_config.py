@@ -20,8 +20,10 @@ class DashboardConfig:
     height_unit: int
     fqmap_height_ratio: float
     fmap_height_ratio: float
-    histogram_height_ratio: float
+    kde_height_ratio: float
     fqmap_plot_height: int
+    kde_bins: int
+    kde_bandwidth_bins: float
     left_label_width: int
     color_bar_width: int
 
@@ -36,11 +38,9 @@ class DashboardConfig:
         return round(self.height_unit * self.fmap_height_ratio)
 
     @property
-    def histogram_height(self) -> int:
-        """Histogram予約領域の固定高。"""
-        return round(
-            self.height_unit * self.histogram_height_ratio
-        )
+    def kde_height(self) -> int:
+        """KDE領域の固定高。"""
+        return round(self.height_unit * self.kde_height_ratio)
 
 
 def load_dashboard_config(
@@ -59,10 +59,10 @@ def load_dashboard_config(
         height_unit=int(layout["height_unit"]),
         fqmap_height_ratio=float(layout["fqmap_height_ratio"]),
         fmap_height_ratio=float(layout["fmap_height_ratio"]),
-        histogram_height_ratio=float(
-            layout["histogram_height_ratio"]
-        ),
+        kde_height_ratio=float(layout["kde_height_ratio"]),
         fqmap_plot_height=int(layout["fqmap_plot_height"]),
+        kde_bins=int(layout["kde_bins"]),
+        kde_bandwidth_bins=float(layout["kde_bandwidth_bins"]),
         left_label_width=int(layout["left_label_width"]),
         color_bar_width=int(layout["color_bar_width"]),
     )

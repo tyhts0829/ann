@@ -18,6 +18,10 @@ from src.analysis.fq_map import (
     build_fq_map_data,
 )
 from src.analysis.frame_map import FrameMapData, build_frame_map_data
+from src.analysis.kde import (
+    KdeData,
+    build_kde_data,
+)
 from src.dashboard_config import DASHBOARD_CONFIG
 from src.standardized.quality_data import QualityRepository
 
@@ -25,7 +29,7 @@ from src.standardized.quality_data import QualityRepository
 class DashboardDataWorker(QtCore.QObject):
     """表示用集計データのバックグラウンド読込。"""
 
-    loaded = QtCore.Signal(object, object)
+    loaded = QtCore.Signal(object, object, object)
     failed = QtCore.Signal(str)
 
     def __init__(self, parquet_path: Path) -> None:
@@ -34,7 +38,7 @@ class DashboardDataWorker(QtCore.QObject):
 
     @QtCore.Slot()
     def load(self) -> None:
-        """FQmap・Fmap集計データの生成。"""
+        """FQmap・Fmap・KDE集計データの生成。"""
         repository = QualityRepository(self.parquet_path)
         try:
             lot_numbers = tuple(lot_number for lot_number, _ in repository.lots())
@@ -46,10 +50,18 @@ class DashboardDataWorker(QtCore.QObject):
                 repository,
                 lot_numbers,
             )
+            kde_data = build_kde_data(
+                repository,
+                lot_numbers,
+            )
         except Exception as error:
             self.failed.emit(str(error))
         else:
-            self.loaded.emit(fq_map_data, frame_map_data)
+            self.loaded.emit(
+                fq_map_data,
+                frame_map_data,
+                kde_data,
+            )
         finally:
             repository.close()
 
@@ -110,7 +122,8 @@ class DashboardWindow(QtWidgets.QMainWindow):
         title.setObjectName("loadingTitle")
         title.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.loading_message = QtWidgets.QLabel(
-            "FQmap・Fmapの集計中です。しばらくお待ちください。"
+            "FQmap・Fmap・KDEの集計中です。"
+            "しばらくお待ちください。"
         )
         self.loading_message.setObjectName("loadingMessage")
         self.loading_message.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
@@ -146,11 +159,12 @@ class DashboardWindow(QtWidgets.QMainWindow):
         self._data_worker = worker
         thread.start()
 
-    @QtCore.Slot(object, object)
+    @QtCore.Slot(object, object, object)
     def _show_dashboard(
         self,
         fq_map_data: FqMapData,
         frame_map_data: FrameMapData,
+        kde_data: KdeData,
     ) -> None:
         """集計済みデータによるダッシュボード表示。"""
         if self._close_requested:
@@ -159,6 +173,7 @@ class DashboardWindow(QtWidgets.QMainWindow):
             self.repository,
             fq_map_data,
             frame_map_data,
+            kde_data,
         )
         self.content_layout.replaceWidget(
             self.loading_widget,
@@ -258,6 +273,22 @@ QLabel#frameMapMetricLabel {
     color: #667080;
     font-size: 11px;
 }
+QWidget#kdeLabelPanel {
+    background: #ffffff;
+}
+QLabel#kdeContextCaption {
+    color: #667080;
+    font-size: 10px;
+}
+QLabel#kdeSelectionLabel {
+    color: #294d91;
+    font-size: 11px;
+    font-weight: 700;
+}
+QLabel#kdeSummaryLabel {
+    color: #667080;
+    font-size: 11px;
+}
 QLabel#fieldLabel {
     color: #667080;
     font-size: 12px;
@@ -352,9 +383,6 @@ QScrollArea#heatmapScrollArea,
 QWidget#plotsContainer {
     background: #ffffff;
     border: none;
-}
-QWidget#histogramReservedSpace {
-    background: #f3f5f7;
 }
 QScrollArea#heatmapScrollArea QScrollBar:vertical {
     background: #e4e8ed;
