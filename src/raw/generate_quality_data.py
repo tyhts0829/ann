@@ -8,6 +8,7 @@ import json
 from datetime import datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal, TypedDict
 
 import numpy as np
 import pyarrow as pa
@@ -19,7 +20,20 @@ DEFAULT_LOTS = 100
 PERLIN_PERIOD = 4096
 PERLIN_MASK = PERLIN_PERIOD - 1
 
-MEASUREMENTS = (
+
+class Measurement(TypedDict):
+    """検査項目の生成条件。"""
+
+    colname: str
+    limmin: float | None
+    limmax: float | None
+    meta_type: str
+    meta_ignore: bool
+    meta_best: float | None
+    meta_category: str
+
+
+MEASUREMENTS: tuple[Measurement, ...] = (
     {
         "colname": "Foreign_Length_Long",
         "limmin": None,
@@ -958,7 +972,9 @@ def _long_metadata(
         grid["vision_index"]
     ]
 
-    def nullable_float(key: str) -> np.ndarray:
+    def nullable_float(
+        key: Literal["limmin", "limmax", "meta_best"],
+    ) -> np.ndarray:
         return np.tile(
             np.asarray(
                 [

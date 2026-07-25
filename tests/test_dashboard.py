@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 import duckdb
 import numpy as np
@@ -15,6 +16,7 @@ from src.analysis.fq_map import (
     FMAP_SECTION_HEIGHT,
     FQ_MAP_SEPARATOR_HEIGHT,
     FQ_MAP_SECTION_HEIGHT,
+    FqMapWidget,
     KDE_SECTION_HEIGHT,
     build_fq_map_data,
 )
@@ -164,7 +166,7 @@ def test_raw_and_standardized_spec_columns() -> None:
 @pytest.mark.parametrize("path", [RAW_DATA_PATH, DATA_PATH])
 def test_foreign_and_defect_values_are_nonnegative(path: Path) -> None:
     with duckdb.connect() as connection:
-        minimum, negative_count = connection.execute(
+        result = connection.execute(
             """
                 SELECT min(value), count_if(value < 0.0)
                 FROM read_parquet(?)
@@ -172,6 +174,8 @@ def test_foreign_and_defect_values_are_nonnegative(path: Path) -> None:
             """,
             [str(path)],
         ).fetchone()
+        assert result is not None
+        minimum, negative_count = result
 
     assert minimum == 0.0
     assert negative_count == 0
@@ -328,8 +332,7 @@ def test_dashboard_window(qtbot, repository: QualityRepository) -> None:
     with qtbot.waitSignal(window.data_loaded, timeout=15_000):
         window.show()
     qtbot.wait(50)
-    fq_map = window.fq_map
-    assert fq_map is not None
+    fq_map = cast(FqMapWidget, window.fq_map)
 
     assert window.windowTitle() == "Quality Dashboard"
     section_texts = {
@@ -340,7 +343,9 @@ def test_dashboard_window(qtbot, repository: QualityRepository) -> None:
     assert section_texts == {"FQmap", "Fmap", "KDE"}
     assert len(fq_map.views) == 3
     assert len(fq_map.frame_map.rows) == 3
-    assert fq_map.plots_container.layout().spacing() == 0
+    plots_layout = fq_map.plots_container.layout()
+    assert plots_layout is not None
+    assert plots_layout.spacing() == 0
     assert len(fq_map.fq_map_separators) == 2
     assert all(
         separator.height() == FQ_MAP_SEPARATOR_HEIGHT
@@ -387,14 +392,18 @@ def test_dashboard_window(qtbot, repository: QualityRepository) -> None:
     )
     assert fq_map.kde_section.height() == KDE_SECTION_HEIGHT
     assert fq_map.kde.current_colname == "Foreign_Length_Long_v1"
-    assert fq_map.findChild(
+    overview_badge = fq_map.findChild(
         QtWidgets.QLabel,
         "overviewBadge",
-    ).text() == "全検査項目の俯瞰"
-    assert fq_map.findChild(
+    )
+    assert overview_badge is not None
+    assert overview_badge.text() == "全検査項目の俯瞰"
+    detail_badge = fq_map.findChild(
         QtWidgets.QLabel,
         "detailBadge",
-    ).text() == "選択項目の詳細"
+    )
+    assert detail_badge is not None
+    assert detail_badge.text() == "選択項目の詳細"
     assert len(
         fq_map.detail_section.findChildren(
             QtWidgets.QLabel,

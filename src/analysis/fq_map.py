@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import os
 from dataclasses import dataclass, field
+from typing import Protocol
 
 os.environ.setdefault("QT_API", "pyside6")
 
@@ -39,6 +40,14 @@ KDE_SECTION_HEIGHT = DASHBOARD_CONFIG.kde_height
 FQ_MAP_PLOT_HEIGHT = DASHBOARD_CONFIG.fqmap_plot_height
 FQ_MAP_SEPARATOR_HEIGHT = 6
 DETAIL_DIVIDER_HEIGHT = 1
+
+
+class SceneMouseEvent(Protocol):
+    """シーン座標を持つマウスイベント。"""
+
+    def scenePos(self) -> QtCore.QPointF:
+        """シーン座標。"""
+        ...
 
 
 @dataclass(frozen=True)
@@ -540,19 +549,19 @@ class FqMapWidget(QtWidgets.QWidget):
         navigation.setContentsMargins(0, 2, 0, 2)
         navigation.setSpacing(10)
 
-        self.first_button = QtWidgets.QToolButton()
-        self.first_button.setObjectName("navigationButton")
-        self.first_button.setText("先頭")
-        self.first_button.clicked.connect(
-            lambda: self.horizontal_scrollbar.setValue(0)
-        )
-
         self.horizontal_scrollbar = QtWidgets.QScrollBar(
             QtCore.Qt.Orientation.Horizontal
         )
         self.horizontal_scrollbar.setObjectName("heatmapScrollBar")
         self.horizontal_scrollbar.valueChanged.connect(
             self._scroll_fq_maps
+        )
+
+        self.first_button = QtWidgets.QToolButton()
+        self.first_button.setObjectName("navigationButton")
+        self.first_button.setText("先頭")
+        self.first_button.clicked.connect(
+            lambda: self.horizontal_scrollbar.setValue(0)
         )
 
         self.latest_button = QtWidgets.QToolButton()
@@ -757,7 +766,7 @@ class FqMapWidget(QtWidgets.QWidget):
     def _select_fq_row(
         self,
         view: FqMapView,
-        event: object,
+        event: SceneMouseEvent,
     ) -> None:
         """クリックしたFQmap検査項目の選択。"""
         scene_position = event.scenePos()

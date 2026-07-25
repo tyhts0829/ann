@@ -1,0 +1,14 @@
+{
+  "include": [
+    "dashboard.py",
+    "src",
+    "tests"
+  ],
+  "venvPath": ".",
+  "venv": ".venv",
+  "pythonVersion": "3.12",
+  "pythonPlatform": "Darwin",
+  "typeCheckingMode": "basic",
+  "useLibraryCodeForTypes": false,
+  "reportMissingTypeStubs": "none"
+}
