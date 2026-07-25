@@ -41,11 +41,8 @@ class DashboardDataWorker(QtCore.QObject):
         """FQmap・Fmap・KDE集計データの生成。"""
         repository = QualityRepository(self.parquet_path)
         try:
-            lot_numbers = tuple(lot_number for lot_number, _ in repository.lots())
-            fq_map_data = build_fq_map_data(
-                repository,
-                lot_numbers,
-            )
+            fq_map_data = build_fq_map_data(repository)
+            lot_numbers = fq_map_data.lot_numbers
             frame_map_data = build_frame_map_data(
                 repository,
                 lot_numbers,

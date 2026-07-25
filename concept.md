@@ -150,7 +150,7 @@ fはFrameNoである。
 2. `spec_position`または`spec_usage`の平均（RdBu_r相当）
 3. `spec_position`または`spec_usage`の母標準偏差（Purples相当）
 
-各列は`FrameNo`単位で集計するが、x tick labelにはロット番号だけを表示する。ロット番号は最上段のFQmap上側に1回だけ表示し、2段目と3段目には重複表示しない。全100ロットは横スクロールで移動する。FQmapは低い高さの概要表示とし、`meta_category`と`vision`で`colname`を絞り込む。
+各列は`FrameNo`単位で集計する。最上段のFQmap上側では、各lotの中央にロット番号と`lot_start_time`の時刻を空けて表示し、その下にFrameNoの補助目盛として1、6、12、18、24を表示する。これらの目盛は2段目と3段目には重複表示しない。全100ロットは横スクロールで移動する。FQmapは低い高さの概要表示とし、`meta_category`と`vision`で`colname`を絞り込む。
 
 raw、standardized、FQmapのすべてで、末尾に`_v1`、`_v2`、`_v3`を持つ45個の一意な`colname`を維持する。全カテゴリ表示では3 visionの行をベース検査項目単位でまとめて目盛表示し、絞り込み時は各colnameを個別表示する。項目選択時と詳細表示では常に完全なvision別colnameを示す。
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from typing import cast
 
@@ -16,6 +17,7 @@ from src.analysis.fq_map import (
     FMAP_SECTION_HEIGHT,
     FQ_MAP_SEPARATOR_HEIGHT,
     FQ_MAP_SECTION_HEIGHT,
+    FQ_MAP_TOP_AXIS_HEIGHT,
     FqMapWidget,
     KDE_SECTION_HEIGHT,
     build_fq_map_data,
@@ -67,6 +69,15 @@ def test_all_lot_fq_map(repository: QualityRepository) -> None:
     assert data.normalized_mean.shape == (45, 2_400)
     assert data.normalized_std.shape == (45, 2_400)
     assert data.lot_count == 100
+    assert data.lot_start_times[0] == datetime(2026, 6, 1, 8, 11)
+    assert data.lot_start_times[-1] == datetime(
+        2026,
+        7,
+        20,
+        20,
+        20,
+        3,
+    )
     assert data.total_measurements == 31_104_000
     assert data.total_ng == 78_126
     assert data.frame_numbers.tolist()[:25] == [*range(1, 25), 1]
@@ -74,6 +85,10 @@ def test_all_lot_fq_map(repository: QualityRepository) -> None:
     assert all(colname.endswith(("_v1", "_v2", "_v3")) for colname in data.colnames)
     assert set(data.visions) == {"vision_1", "vision_2", "vision_3"}
     assert data.filter_vision("vision_2").ng_rates.shape == (15, 2_400)
+    assert (
+        data.filter_vision("vision_2").lot_start_times
+        == data.lot_start_times
+    )
     assert data.filter_rows("異物", "vision_2").ng_rates.shape == (
         3,
         2_400,
@@ -233,8 +248,25 @@ def test_latest_lot_fq_map(repository: QualityRepository) -> None:
 
     assert data.ng_rates.shape == (45, 24)
     assert data.lot_count == 1
+    assert data.lot_start_times == (
+        datetime(2026, 7, 20, 20, 20, 3),
+    )
     assert data.total_measurements == 311_040
     assert data.total_ng == 3_574
+
+
+def test_frame_ticks_keep_lot_boundaries_readable() -> None:
+    assert FqMapWidget._frame_ticks(0, 2) == [
+        (0.0, "1"),
+        (5.0, "6"),
+        (11.0, "12"),
+        (17.0, "18"),
+        (23.5, "24/1"),
+        (29.0, "6"),
+        (35.0, "12"),
+        (41.0, "18"),
+        (47.0, "24"),
+    ]
 
 
 def test_frame_map_data(repository: QualityRepository) -> None:
@@ -558,6 +590,18 @@ def test_dashboard_window(qtbot, repository: QualityRepository) -> None:
         label.startswith("LOT_")
         for _, label in top_axis._tickLevels[0]
     )
+    assert top_axis._tickLevels[0][-1][1] == (
+        "LOT_20260720_B  20:20:03"
+    )
+    frame_axis = fq_map.views[0].frame_axis
+    assert frame_axis is not None
+    assert frame_axis.linkedView() is top_axis.linkedView()
+    assert len(frame_axis._tickLevels) == 1
+    initial_first_lot = fq_map.current_data.lot_count - VISIBLE_LOTS
+    assert frame_axis._tickLevels[0] == FqMapWidget._frame_ticks(
+        initial_first_lot,
+        VISIBLE_LOTS,
+    )
     assert all(
         not view.plot_item.getAxis("bottom").isVisible()
         for view in fq_map.views
@@ -567,7 +611,7 @@ def test_dashboard_window(qtbot, repository: QualityRepository) -> None:
         for view in fq_map.views[1:]
     )
     assert [view.card.height() for view in fq_map.views] == [
-        DASHBOARD_CONFIG.fqmap_plot_height + 28,
+        DASHBOARD_CONFIG.fqmap_plot_height + FQ_MAP_TOP_AXIS_HEIGHT,
         DASHBOARD_CONFIG.fqmap_plot_height,
         DASHBOARD_CONFIG.fqmap_plot_height,
     ]
@@ -609,6 +653,10 @@ def test_dashboard_window(qtbot, repository: QualityRepository) -> None:
         for view in fq_map.views
     )
     fq_map.horizontal_scrollbar.setValue(0)
+    assert frame_axis._tickLevels[0] == FqMapWidget._frame_ticks(
+        0,
+        VISIBLE_LOTS,
+    )
     assert all(
         view.plot_item.viewRange()[0]
         == pytest.approx([-0.5, VISIBLE_LOTS * 24 - 0.5])
@@ -716,7 +764,7 @@ def test_dashboard_window(qtbot, repository: QualityRepository) -> None:
     )
     qtbot.wait(50)
     assert [view.card.height() for view in fq_map.views] == [
-        DASHBOARD_CONFIG.fqmap_plot_height + 28,
+        DASHBOARD_CONFIG.fqmap_plot_height + FQ_MAP_TOP_AXIS_HEIGHT,
         DASHBOARD_CONFIG.fqmap_plot_height,
         DASHBOARD_CONFIG.fqmap_plot_height,
     ]

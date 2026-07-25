@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import os
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Protocol
 
 os.environ.setdefault("QT_API", "pyside6")
@@ -33,11 +34,17 @@ from src.standardized.quality_data import QualityRepository
 
 
 FRAME_NUMBERS = np.arange(1, 25)
+FRAME_TICK_NUMBERS = (1, 6, 12, 18, 24)
 VISIBLE_COLUMNS = len(FRAME_NUMBERS) * VISIBLE_LOTS
 FQ_MAP_SECTION_HEIGHT = DASHBOARD_CONFIG.fqmap_height
 FMAP_SECTION_HEIGHT = DASHBOARD_CONFIG.fmap_height
 KDE_SECTION_HEIGHT = DASHBOARD_CONFIG.kde_height
 FQ_MAP_PLOT_HEIGHT = DASHBOARD_CONFIG.fqmap_plot_height
+FQ_MAP_LOT_AXIS_HEIGHT = 24
+FQ_MAP_FRAME_AXIS_HEIGHT = 20
+FQ_MAP_TOP_AXIS_HEIGHT = (
+    FQ_MAP_LOT_AXIS_HEIGHT + FQ_MAP_FRAME_AXIS_HEIGHT
+)
 FQ_MAP_SEPARATOR_HEIGHT = 6
 DETAIL_DIVIDER_HEIGHT = 1
 
@@ -58,6 +65,7 @@ class FqMapData:
     categories: tuple[str, ...]
     visions: tuple[str, ...]
     lot_numbers: tuple[str, ...]
+    lot_start_times: tuple[datetime, ...]
     column_lots: tuple[str, ...]
     frame_numbers: np.ndarray
     ng_rates: np.ndarray
@@ -106,6 +114,7 @@ class FqMapData:
             ),
             visions=tuple(self.visions[index] for index in row_indices),
             lot_numbers=self.lot_numbers,
+            lot_start_times=self.lot_start_times,
             column_lots=self.column_lots,
             frame_numbers=self.frame_numbers,
             ng_rates=self.ng_rates[row_indices],
@@ -136,6 +145,7 @@ class FqMapView:
     image_item: pg.ImageItem
     color_bar: pg.ColorBarItem
     selection_region: pg.LinearRegionItem
+    frame_axis: pg.AxisItem | None = None
     separators: list[pg.InfiniteLine] = field(default_factory=list)
     mouse_proxy: pg.SignalProxy | None = None
 
@@ -145,8 +155,10 @@ def build_fq_map_data(
     lot_numbers: tuple[str, ...] | None = None,
 ) -> FqMapData:
     """FrameNo別の3種類のFQマップデータ生成。"""
+    lot_records = repository.lots()
     if lot_numbers is None:
-        lot_numbers = tuple(record[0] for record in repository.lots())
+        lot_numbers = tuple(record[0] for record in lot_records)
+    lot_time_by_number = dict(lot_records)
 
     frame = repository.ng_rate_by_frame(lot_numbers)
     if frame.empty:
@@ -173,6 +185,10 @@ def build_fq_map_data(
         categories=categories,
         visions=visions,
         lot_numbers=lot_numbers,
+        lot_start_times=tuple(
+            lot_time_by_number[lot_number]
+            for lot_number in lot_numbers
+        ),
         column_lots=tuple(
             lot_number
             for lot_number in lot_numbers
@@ -467,9 +483,24 @@ class FqMapWidget(QtWidgets.QWidget):
         plot_item.getViewBox().invertY(True)
         plot_item.getAxis("left").setWidth(205)
         plot_item.hideAxis("bottom")
+        frame_axis = None
         if metric == "ng_rates":
             plot_item.showAxis("top")
-            plot_item.getAxis("top").setHeight(28)
+            lot_axis = plot_item.getAxis("top")
+            plot_item.layout.removeItem(plot_item.titleLabel)
+            plot_item.titleLabel.hide()
+            plot_item.layout.removeItem(lot_axis)
+            plot_item.layout.addItem(lot_axis, 0, 1)
+            plot_item.axes["top"]["pos"] = (0, 1)
+            lot_axis.setHeight(FQ_MAP_LOT_AXIS_HEIGHT)
+
+            frame_axis = pg.AxisItem(
+                orientation="top",
+                parent=plot_item,
+            )
+            frame_axis.linkToView(plot_item.getViewBox())
+            frame_axis.setHeight(FQ_MAP_FRAME_AXIS_HEIGHT)
+            plot_item.layout.addItem(frame_axis, 1, 1)
         else:
             plot_item.hideAxis("top")
 
@@ -485,6 +516,18 @@ class FqMapWidget(QtWidgets.QWidget):
             axis.setPen(pg.mkPen("#7a8492"))
             axis.setTextPen(pg.mkPen("#303846"))
             axis.setStyle(tickFont=axis_font, tickTextOffset=5)
+
+        if frame_axis is not None:
+            frame_axis_font = QtGui.QFont()
+            frame_axis_font.setPointSize(6)
+            frame_axis.setPen(pg.mkPen("#9aa3af"))
+            frame_axis.setTextPen(pg.mkPen("#5f6875"))
+            frame_axis.setStyle(
+                tickFont=frame_axis_font,
+                tickTextOffset=2,
+                tickLength=3,
+                hideOverlappingLabels=False,
+            )
 
         image_item = pg.ImageItem(axisOrder="row-major")
         image_item.setColorMap(color_map)
@@ -528,6 +571,7 @@ class FqMapWidget(QtWidgets.QWidget):
             image_item=image_item,
             color_bar=color_bar,
             selection_region=selection_region,
+            frame_axis=frame_axis,
         )
         view.mouse_proxy = pg.SignalProxy(
             plot_widget.scene().sigMouseMoved,
@@ -542,6 +586,12 @@ class FqMapWidget(QtWidgets.QWidget):
                 event,
             )
         )
+        if frame_axis is not None:
+            plot_item.getViewBox().sigResized.connect(
+                lambda *_, fq_view=view: (
+                    self._update_lot_axis_font(fq_view)
+                )
+            )
         return view
 
     def _build_horizontal_navigation(self) -> QtWidgets.QLayout:
@@ -695,7 +745,11 @@ class FqMapWidget(QtWidgets.QWidget):
 
     def _update_plot_heights(self) -> None:
         for view in self.views:
-            top_axis_height = 28 if view.metric == "ng_rates" else 0
+            top_axis_height = (
+                FQ_MAP_TOP_AXIS_HEIGHT
+                if view.metric == "ng_rates"
+                else 0
+            )
             view.card.setFixedHeight(
                 FQ_MAP_PLOT_HEIGHT + top_axis_height
             )
@@ -749,6 +803,18 @@ class FqMapWidget(QtWidgets.QWidget):
                 last_column - 0.5,
                 padding=0.0,
             )
+            if view.frame_axis is not None:
+                view.frame_axis.setTicks(
+                    [
+                        self._frame_ticks(
+                            first_lot,
+                            math.ceil(
+                                (last_column - first_column)
+                                / len(FRAME_NUMBERS)
+                            ),
+                        )
+                    ]
+                )
 
         self.first_button.setEnabled(first_lot > 0)
         self.latest_button.setEnabled(
@@ -821,11 +887,65 @@ class FqMapWidget(QtWidgets.QWidget):
             (
                 lot_index * len(FRAME_NUMBERS)
                 + (len(FRAME_NUMBERS) - 1) / 2,
-                lot_number,
+                (
+                    f"{lot_number}  "
+                    f"{data.lot_start_times[lot_index]:%H:%M:%S}"
+                ),
             )
             for lot_index, lot_number in enumerate(data.lot_numbers)
         ]
         view.plot_item.getAxis("top").setTicks([lot_ticks])
+        self._update_lot_axis_font(view)
+
+    def _update_lot_axis_font(self, view: FqMapView) -> None:
+        """lot幅に応じた上側目盛フォント。"""
+        visible_lots = min(VISIBLE_LOTS, self.current_data.lot_count)
+        lot_width = (
+            view.plot_item.getViewBox().sceneBoundingRect().width()
+            / visible_lots
+        )
+        axis_font = QtGui.QFont()
+        axis_font.setPointSize(7)
+        if lot_width < 110:
+            axis_font.setStretch(62)
+        elif lot_width < 140:
+            axis_font.setStretch(70)
+        view.plot_item.getAxis("top").setStyle(tickFont=axis_font)
+
+    @staticmethod
+    def _frame_ticks(
+        first_lot: int,
+        visible_lot_count: int,
+    ) -> list[tuple[float, str]]:
+        """表示中lotのFrameNo補助目盛。"""
+        ticks: list[tuple[float, str]] = []
+        for offset in range(visible_lot_count):
+            lot_index = first_lot + offset
+            lot_start = lot_index * len(FRAME_NUMBERS)
+            if offset == 0:
+                ticks.append((float(lot_start), "1"))
+            ticks.extend(
+                (
+                    float(lot_start + frame_number - 1),
+                    str(frame_number),
+                )
+                for frame_number in FRAME_TICK_NUMBERS[1:-1]
+            )
+            if offset < visible_lot_count - 1:
+                ticks.append(
+                    (
+                        float(lot_start + len(FRAME_NUMBERS) - 0.5),
+                        "24/1",
+                    )
+                )
+            else:
+                ticks.append(
+                    (
+                        float(lot_start + len(FRAME_NUMBERS) - 1),
+                        "24",
+                    )
+                )
+        return ticks
 
     def _draw_lot_separators(
         self,
