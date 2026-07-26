@@ -12,6 +12,7 @@ import pyqtgraph as pg
 from PySide6 import QtCore, QtWidgets
 
 from src.analysis.map_palettes import MAP_DEFINITIONS, make_color_map
+from src.analysis.plot_style import make_lot_separator_widget
 from src.analysis.quality_columns import SPEC_ORDER
 from src.dashboard_config import DASHBOARD_CONFIG
 from src.standardized.quality_data import QualityRepository
@@ -50,6 +51,7 @@ class FrameMapRow:
     plot_widgets: list[pg.PlotWidget]
     image_items: list[pg.ImageItem]
     color_bar: pg.ColorBarItem
+    lot_separators: list[QtWidgets.QFrame]
     levels: tuple[float, float] = (0.0, 1.0)
 
 
@@ -179,7 +181,12 @@ class FrameMapWidget(QtWidgets.QWidget):
 
         plot_widgets = []
         image_items = []
-        for _ in range(VISIBLE_LOTS):
+        lot_separators: list[QtWidgets.QFrame] = []
+        for lot_offset in range(VISIBLE_LOTS):
+            if lot_offset:
+                separator = make_lot_separator_widget()
+                lot_separators.append(separator)
+                layout.addWidget(separator)
             plot_widget = pg.PlotWidget(background="#ffffff")
             plot_item = plot_widget.getPlotItem()
             plot_item.setMenuEnabled(False)
@@ -223,6 +230,7 @@ class FrameMapWidget(QtWidgets.QWidget):
             plot_widgets=plot_widgets,
             image_items=image_items,
             color_bar=color_bar,
+            lot_separators=lot_separators,
         )
 
     def _build_row_label(

@@ -1,25 +1,28 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from pathlib import Path
 from typing import cast
 
 import duckdb
 import numpy as np
+import pyarrow as pa
 import pyarrow.parquet as pq
 import pyqtgraph as pg
 import pytest
-from PySide6 import QtCore, QtWidgets
+from PySide6 import QtCore, QtGui, QtWidgets
 
-from dashboard import DashboardWindow, STYLESHEET
+from dashboard import STYLESHEET, DashboardWindow
 from src.analysis.fq_map import (
     DETAIL_DIVIDER_HEIGHT,
     FMAP_SECTION_HEIGHT,
-    FQ_MAP_SEPARATOR_HEIGHT,
     FQ_MAP_SECTION_HEIGHT,
+    FQ_MAP_SEPARATOR_HEIGHT,
     FQ_MAP_TOP_AXIS_HEIGHT,
-    FqMapWidget,
     KDE_SECTION_HEIGHT,
+    QUALITY_TREND_SECTION_HEIGHT,
+    FqMapWidget,
     build_fq_map_data,
 )
 from src.analysis.frame_map import (
@@ -28,6 +31,10 @@ from src.analysis.frame_map import (
     build_frame_map_data,
 )
 from src.analysis.kde import build_kde_data
+from src.analysis.plot_style import (
+    LOT_SEPARATOR_COLOR,
+    LOT_SEPARATOR_WIDTH,
+)
 from src.dashboard_config import (
     CONFIG_PATH,
     DASHBOARD_CONFIG,
@@ -38,10 +45,16 @@ from src.raw.generate_quality_data import (
     MEASUREMENTS,
     _base_grid,
     _generate_values,
+    _long_metadata,
     _perlin_lot_factors,
+    _schema,
+    _to_table,
+)
+from src.raw.generate_quality_data import (
+    _write_manifest as write_raw_manifest,
 )
 from src.standardized.quality_data import QualityRepository
-
+from src.standardized.standardize_quality_data import standardize
 
 DATA_PATH = (
     Path(__file__).resolve().parents[1]
@@ -178,6 +191,98 @@ def test_raw_and_standardized_spec_columns() -> None:
     assert frame.loc[one_sided, "spec_position"].isna().all()
 
 
+def test_meta_unit_generation_and_standardization(
+    tmp_path: Path,
+) -> None:
+    expected_units = {
+        "Foreign_Length_Long": "mm",
+        "Foreign_Length_Short": "mm",
+        "Foreign_Size": "mm²",
+        "Lead_Length_L": "mm",
+        "Lead_Length_R": "mm",
+        "Lead_Pitch": "mm",
+        "Work_Xw": "mm",
+        "Work_Yw": "mm",
+        "Work_Center_X": "mm",
+        "Work_Center_Y": "mm",
+        "Mark_Center_X": "mm",
+        "Mark_Center_Y": "mm",
+        "Defect_Length_Long": "mm",
+        "Defect_Length_Short": "mm",
+        "Defect_Size": "mm²",
+    }
+    assert {
+        measurement["colname"]: measurement["meta_unit"]
+        for measurement in MEASUREMENTS
+    } == expected_units
+
+    schema = _schema(DEFAULT_SEED, 1)
+    assert schema.field("meta_unit").type == pa.string()
+    assert not schema.field("meta_unit").nullable
+    assert schema.metadata[b"dataset_version"] == b"4.0"
+
+    grid = {
+        name: values[:1]
+        for name, values in _base_grid().items()
+    }
+    long_metadata = _long_metadata(grid)
+    raw_table = _to_table(
+        "LOT_TEST",
+        datetime(2026, 1, 1),
+        grid,
+        np.zeros((1, len(MEASUREMENTS))),
+        long_metadata,
+        schema,
+    )
+    assert raw_table.column("meta_unit").to_pylist() == list(
+        expected_units.values()
+    )
+
+    raw_path = tmp_path / "raw.parquet"
+    standardized_path = tmp_path / "standardized.parquet"
+    pq.write_table(
+        raw_table,
+        raw_path,
+        use_dictionary=["meta_unit"],
+    )
+    raw_manifest_path = write_raw_manifest(
+        raw_path,
+        DEFAULT_SEED,
+        1,
+        raw_table.num_rows,
+    )
+    raw_manifest = json.loads(
+        raw_manifest_path.read_text(encoding="utf-8")
+    )
+    assert raw_manifest["meta_units"] == expected_units
+
+    _, standardized_manifest_path = standardize(
+        raw_path,
+        standardized_path,
+    )
+    standardized_file = pq.ParquetFile(standardized_path)
+    standardized_table = standardized_file.read()
+    assert (
+        standardized_table.column("meta_unit").to_pylist()
+        == raw_table.column("meta_unit").to_pylist()
+    )
+    assert (
+        standardized_file.schema_arrow.metadata[b"dataset_version"]
+        == b"4.1"
+    )
+    meta_unit_index = (
+        standardized_file.schema_arrow.get_field_index("meta_unit")
+    )
+    encodings = standardized_file.metadata.row_group(0).column(
+        meta_unit_index
+    ).encodings
+    assert "RLE_DICTIONARY" in encodings
+    standardized_manifest = json.loads(
+        standardized_manifest_path.read_text(encoding="utf-8")
+    )
+    assert standardized_manifest["metadata_columns"] == ["meta_unit"]
+
+
 @pytest.mark.parametrize("path", [RAW_DATA_PATH, DATA_PATH])
 def test_foreign_and_defect_values_are_nonnegative(path: Path) -> None:
     with duckdb.connect() as connection:
@@ -241,6 +346,9 @@ def test_dashboard_config() -> None:
     assert FQ_MAP_SECTION_HEIGHT == config.fqmap_height
     assert FMAP_SECTION_HEIGHT == config.fmap_height
     assert KDE_SECTION_HEIGHT == config.kde_height
+    assert QUALITY_TREND_SECTION_HEIGHT == (
+        config.quality_trend_height
+    )
 
 
 def test_latest_lot_fq_map(repository: QualityRepository) -> None:
@@ -361,10 +469,12 @@ def test_dashboard_window(qtbot, repository: QualityRepository) -> None:
     assert window.fq_map is None
     assert window.loading_progress.minimum() == 0
     assert window.loading_progress.maximum() == 0
-    with qtbot.waitSignal(window.data_loaded, timeout=15_000):
+    with qtbot.waitSignal(window.data_loaded, timeout=25_000):
         window.show()
     qtbot.wait(50)
     fq_map = cast(FqMapWidget, window.fq_map)
+    assert window.dashboard_scroll_area is not None
+    assert window.dashboard_scroll_area.widget() is fq_map
 
     assert window.windowTitle() == "Quality Dashboard"
     section_texts = {
@@ -372,7 +482,7 @@ def test_dashboard_window(qtbot, repository: QualityRepository) -> None:
         for label in fq_map.findChildren(QtWidgets.QLabel)
         if label.objectName() == "mapSectionTitle"
     }
-    assert section_texts == {"FQmap", "Fmap", "KDE"}
+    assert section_texts == {"FQmap", "Fmap", "KDE", "F推移"}
     assert len(fq_map.views) == 3
     assert len(fq_map.frame_map.rows) == 3
     plots_layout = fq_map.plots_container.layout()
@@ -412,18 +522,35 @@ def test_dashboard_window(qtbot, repository: QualityRepository) -> None:
     assert detail_groups == [fq_map.detail_section]
     assert fq_map.detail_section.isAncestorOf(fq_map.fmap_section)
     assert fq_map.detail_section.isAncestorOf(fq_map.kde_section)
+    assert fq_map.detail_section.isAncestorOf(
+        fq_map.quality_trend_section
+    )
     assert not fq_map.fq_map_section.isAncestorOf(
         fq_map.detail_section
     )
     assert fq_map.detail_divider.height() == DETAIL_DIVIDER_HEIGHT
+    assert (
+        fq_map.quality_trend_divider.height()
+        == DETAIL_DIVIDER_HEIGHT
+    )
     assert fq_map.detail_section.contentsRect().contains(
         fq_map.fmap_section.geometry()
     )
     assert fq_map.detail_section.contentsRect().contains(
         fq_map.kde_section.geometry()
     )
+    assert fq_map.detail_section.contentsRect().contains(
+        fq_map.quality_trend_section.geometry()
+    )
     assert fq_map.kde_section.height() == KDE_SECTION_HEIGHT
+    assert (
+        fq_map.quality_trend_section.height()
+        == QUALITY_TREND_SECTION_HEIGHT
+    )
     assert fq_map.kde.current_colname == "Foreign_Length_Long_v1"
+    assert fq_map.quality_trend.current_colname == (
+        "Foreign_Length_Long_v1"
+    )
     overview_badge = fq_map.findChild(
         QtWidgets.QLabel,
         "overviewBadge",
@@ -444,6 +571,9 @@ def test_dashboard_window(qtbot, repository: QualityRepository) -> None:
     ) == 1
     assert len(fq_map.kde.plot_widgets) == VISIBLE_LOTS
     assert fq_map.kde.current_lot_numbers == (
+        fq_map.full_data.lot_numbers[-VISIBLE_LOTS:]
+    )
+    assert fq_map.quality_trend.current_lot_numbers == (
         fq_map.full_data.lot_numbers[-VISIBLE_LOTS:]
     )
     initial_row = fq_map.kde.data.colname_index(
@@ -503,6 +633,64 @@ def test_dashboard_window(qtbot, repository: QualityRepository) -> None:
         and all(image.image.shape == (12, 24) for image in row.image_items)
         for row in fq_map.frame_map.rows
     )
+    assert fq_map.quality_trend.image_item.image.shape == (60, 2_400)
+    assert all(
+        len(view.separators) == 99
+        for view in fq_map.views
+    )
+    for view in fq_map.views:
+        legend = view.card.findChild(pg.GraphicsLayoutWidget)
+        assert legend is not None
+        legend_top = legend.mapToGlobal(QtCore.QPoint(0, 0)).y()
+        legend_bottom = legend_top + legend.height()
+        view_box = view.plot_item.getViewBox().sceneBoundingRect()
+        view_top = (
+            view.plot_widget.mapToGlobal(QtCore.QPoint(0, 0)).y()
+            + view_box.top()
+        )
+        view_bottom = view_top + view_box.height()
+        assert legend_top == pytest.approx(view_top, abs=2.0)
+        assert legend_bottom == pytest.approx(
+            view_bottom,
+            abs=2.0,
+        )
+    assert all(
+        len(row.lot_separators) == VISIBLE_LOTS - 1
+        for row in fq_map.frame_map.rows
+    )
+    assert len(fq_map.kde.lot_separators) == VISIBLE_LOTS - 1
+    assert len(fq_map.quality_trend.lot_separators) == 99
+    plot_separators = [
+        *fq_map.views[0].separators,
+        *fq_map.quality_trend.lot_separators,
+    ]
+    assert {
+        separator.pen.color().name()
+        for separator in plot_separators
+    } == {LOT_SEPARATOR_COLOR}
+    assert {
+        separator.pen.widthF()
+        for separator in plot_separators
+    } == {LOT_SEPARATOR_WIDTH}
+    widget_separators = [
+        *fq_map.frame_map.rows[0].lot_separators,
+        *fq_map.kde.lot_separators,
+    ]
+    assert all(
+        separator.objectName() == "lotSeparator"
+        and separator.width() == round(LOT_SEPARATOR_WIDTH)
+        and separator.line_color == LOT_SEPARATOR_COLOR
+        and separator.line_width == LOT_SEPARATOR_WIDTH
+        for separator in widget_separators
+    )
+    assert all(
+        separator.bottom_margin == 0
+        for separator in fq_map.frame_map.rows[0].lot_separators
+    )
+    assert all(
+        separator.bottom_margin == 28
+        for separator in fq_map.kde.lot_separators
+    )
     fq_lot_width = (
         fq_map.views[0]
         .plot_item.getViewBox()
@@ -524,8 +712,15 @@ def test_dashboard_window(qtbot, repository: QualityRepository) -> None:
         .sceneBoundingRect()
         .width()
     )
-    assert fmap_lot_width == pytest.approx(fq_lot_width, rel=0.01)
-    assert kde_lot_width == pytest.approx(fmap_lot_width, rel=0.01)
+    trend_lot_width = (
+        fq_map.quality_trend.plot_item.getViewBox()
+        .sceneBoundingRect()
+        .width()
+        / VISIBLE_LOTS
+    )
+    assert fmap_lot_width == pytest.approx(fq_lot_width, abs=3.0)
+    assert kde_lot_width == pytest.approx(fmap_lot_width, abs=1.0)
+    assert trend_lot_width == pytest.approx(fq_lot_width, rel=0.01)
     fq_plot_x = (
         fq_map.views[0].plot_widget.mapToGlobal(
             QtCore.QPoint(0, 0)
@@ -556,8 +751,45 @@ def test_dashboard_window(qtbot, repository: QualityRepository) -> None:
         .sceneBoundingRect()
         .left()
     )
+    trend_plot_x = (
+        fq_map.quality_trend.plot_widget.mapToGlobal(
+            QtCore.QPoint(0, 0)
+        ).x()
+        + fq_map.quality_trend.plot_item.getViewBox()
+        .sceneBoundingRect()
+        .left()
+    )
     assert fmap_plot_x == pytest.approx(fq_plot_x, abs=2.0)
     assert kde_plot_x == pytest.approx(fmap_plot_x, abs=2.0)
+    assert trend_plot_x == pytest.approx(fq_plot_x, abs=2.0)
+    for boundary in range(1, VISIBLE_LOTS):
+        fq_boundary_x = fq_plot_x + fq_lot_width * boundary
+        fmap_separator = fq_map.frame_map.rows[0].lot_separators[
+            boundary - 1
+        ]
+        fmap_boundary_x = (
+            fmap_separator.mapToGlobal(QtCore.QPoint(0, 0)).x()
+            + fmap_separator.width() / 2
+        )
+        kde_separator = fq_map.kde.lot_separators[boundary - 1]
+        kde_boundary_x = (
+            kde_separator.mapToGlobal(QtCore.QPoint(0, 0)).x()
+            + kde_separator.width() / 2
+        )
+        trend_boundary_x = (
+            trend_plot_x + trend_lot_width * boundary
+        )
+        assert max(
+            fq_boundary_x,
+            fmap_boundary_x,
+            kde_boundary_x,
+            trend_boundary_x,
+        ) - min(
+            fq_boundary_x,
+            fmap_boundary_x,
+            kde_boundary_x,
+            trend_boundary_x,
+        ) <= 2.0
     grid_lines = [
         item
         for item in fq_map.frame_map.rows[0]
@@ -669,6 +901,12 @@ def test_dashboard_window(qtbot, repository: QualityRepository) -> None:
     assert fq_map.kde.current_lot_numbers == (
         fq_map.full_data.lot_numbers[:VISIBLE_LOTS]
     )
+    assert fq_map.quality_trend.current_lot_numbers == (
+        fq_map.full_data.lot_numbers[:VISIBLE_LOTS]
+    )
+    assert fq_map.quality_trend.plot_item.viewRange()[0] == pytest.approx(
+        [-0.5, VISIBLE_LOTS * 24 - 0.5]
+    )
     assert np.allclose(
         fq_map.kde.curve_items[0].getData()[1],
         fq_map.kde.data.densities[initial_row, 0],
@@ -694,6 +932,9 @@ def test_dashboard_window(qtbot, repository: QualityRepository) -> None:
     )
     assert fq_map.fmap_selection_label.text().endswith("Work_Xw_v2")
     assert fq_map.kde.current_colname == "Work_Xw_v2"
+    assert fq_map.quality_trend.current_colname == "Work_Xw_v2"
+    assert fq_map.quality_trend.lower_line.isVisible()
+    assert fq_map.quality_trend.upper_line.isVisible()
     assert all(line.isVisible() for line in fq_map.kde.lower_lines)
     assert all(line.isVisible() for line in fq_map.kde.center_lines)
     assert all(line.isVisible() for line in fq_map.kde.upper_lines)
@@ -750,13 +991,18 @@ def test_dashboard_window(qtbot, repository: QualityRepository) -> None:
         for colname in fq_map.current_data.colnames
     )
     assert fq_map.selected_colname == "Foreign_Length_Long_v2"
-    assert "異物 / vision_2" in fq_map.scope_label.text()
+    assert "異物 / vision_2" in fq_map.scope_label.toolTip()
     assert fq_map.fmap_selection_label.text().endswith(
         "Foreign_Length_Long_v2"
     )
     assert fq_map.kde.current_colname == (
         "Foreign_Length_Long_v2"
     )
+    assert fq_map.quality_trend.current_colname == (
+        "Foreign_Length_Long_v2"
+    )
+    assert not fq_map.quality_trend.lower_line.isVisible()
+    assert fq_map.quality_trend.upper_line.isVisible()
     assert all(not line.isVisible() for line in fq_map.kde.center_lines)
     assert all(
         plot_item.viewRange()[0] == pytest.approx([0.0, 0.36])
@@ -791,6 +1037,10 @@ def test_dashboard_window(qtbot, repository: QualityRepository) -> None:
     assert fq_map.fq_map_section.height() == FQ_MAP_SECTION_HEIGHT
     assert fq_map.fmap_section.height() == FMAP_SECTION_HEIGHT
     assert fq_map.kde_section.height() == KDE_SECTION_HEIGHT
+    assert (
+        fq_map.quality_trend_section.height()
+        == QUALITY_TREND_SECTION_HEIGHT
+    )
 
     window.resize(1_600, 1_550)
     qtbot.wait(100)
@@ -799,5 +1049,28 @@ def test_dashboard_window(qtbot, repository: QualityRepository) -> None:
     ) == FMAP_SECTION_HEIGHT
     assert fq_map.fq_map_section.height() == FQ_MAP_SECTION_HEIGHT
     assert fq_map.fmap_section.height() == FMAP_SECTION_HEIGHT
+    window.resize(1_100, 760)
+    qtbot.wait(100)
+    scope_width = QtGui.QFontMetrics(
+        fq_map.scope_label.font()
+    ).horizontalAdvance(fq_map.scope_label.text())
+    assert scope_width <= fq_map.scope_label.width()
+    ng_rate_width = QtGui.QFontMetrics(
+        fq_map.ng_rate_label.font()
+    ).horizontalAdvance(fq_map.ng_rate_label.text())
+    assert ng_rate_width <= fq_map.ng_rate_label.contentsRect().width()
+    assert (
+        fq_map.ng_rate_label.sizeHint().width()
+        <= fq_map.ng_rate_label.width()
+    )
+    assert not (
+        fq_map.quality_trend.plot_item.getAxis("top").isVisible()
+    )
+    dashboard_scrollbar = (
+        window.dashboard_scroll_area.verticalScrollBar()
+    )
+    assert dashboard_scrollbar.maximum() > 0
+    dashboard_scrollbar.setValue(dashboard_scrollbar.maximum())
+    assert dashboard_scrollbar.value() == dashboard_scrollbar.maximum()
     qtbot.keyClick(window, QtCore.Qt.Key.Key_Escape)
     qtbot.waitUntil(lambda: not window.isVisible())

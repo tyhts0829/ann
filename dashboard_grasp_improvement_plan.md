@@ -142,94 +142,13 @@
 
 ## P02. 表示範囲・時刻・Frame順序の明示
 
-### 目的
-
-「全データの集計範囲」と「現在画面に見えている範囲」を区別し、lotとFrameの順序を読み取りやすくする。
-
-### 初回仕様
-
-- ヘッダーに次を分けて表示する。
-  - 集計対象: 全100 lot
-  - 表示中: 93–100 / 100 lot
-  - 表示期間: 最初と最後の`lot_start_time`
-- FQmap上端に各lotのFrameNo目印として1、6、12、18、24を表示する。
-- lot幅は現状どおり等間隔とし、実時間間隔の長短は表現しない。
-
-### 変更対象
-
-- `src/standardized/quality_data.py`
-- `src/analysis/fq_map.py`
-- `tests/test_dashboard.py`
-
-### 実装手順
-
-1. `FqMapData`へlot開始時刻を保持させる。
-2. 横スクロール更新時に表示中lot番号と期間を更新する。
-3. lotラベルとFrameNo補助目盛を上下2階層で表示する。
-4. ホバー詳細の時刻表記を統一する。
-5. 「等間隔は処理順を表し、経過時間幅ではない」ことを補足表示する。
-
-### テスト
-
-- 起動直後に最新8 lotの範囲が表示されること。
-- 先頭移動後に1–8 / 100へ更新されること。
-- lotが`lot_start_time`順であること。
-- FrameNo補助目盛が各lotで同じ位置に並ぶこと。
-
-### 完了条件
-
-- 現在見ているlot範囲、期間、Frame順序をホバーなしで確認できる。
-- lot番号とFrameNoが視覚的に混同されない。
+完了
 
 ---
 
 ## P03. 測定単位と項目メタデータの追加
 
-### 目的
-
-KDEや今後追加する生値トレンドを、測定の意味と物理単位を含めて読めるようにする。また、現在のParquetだけに存在する`meta_unit`を生成ソースへ戻し、データ再生成可能な状態にする。
-
-### 事前判断
-
-- 現行raw manifestにある15項目の`meta_units`を初期値とし、正式な単位として妥当か確認する。
-- 単位を新たに推測で追加しない。
-- 初回対象列は既存Parquetと同じ`meta_unit`とする。
-- 表示名が必要な場合は`meta_display_name`も同じ測定マスターで管理するが、初回に必須とはしない。
-- 規格種別は`limmin, limmax, meta_best`から導出し、重複列を増やさない。
-
-### 変更対象
-
-- `concept.md`
-- `src/raw/generate_quality_data.py`
-- `src/standardized/standardize_quality_data.py`
-- `src/standardized/quality_data.py`
-- `src/analysis/kde.py`
-- `tests/test_dashboard.py`
-- raw・standardized Parquetとmanifest
-
-### 実装手順
-
-1. 現行Parquet・manifestと生成ソースのスキーマ差をテストで固定する。
-2. `Measurement`と15項目の定義へ`meta_unit`を追加する。
-3. rawスキーマと生成データへ列を追加する。
-4. standardize処理で列をそのまま保持する。
-5. 項目メタデータ取得メソッドをRepositoryへ追加する。
-6. KDEの横軸・詳細欄へ単位を表示する。
-7. 選択項目欄に規格種別、規格値、最良値をまとめて表示する。
-8. データを再生成し、manifestのバージョンを更新する。
-
-### テスト
-
-- 全行で`meta_unit`が欠損していないこと。
-- 同一colname内で単位が一意であること。
-- rawとstandardizedで単位が一致すること。
-- KDEの選択変更時に単位表示も切り替わること。
-- 規格値の表示に同じ単位が付くこと。
-
-### 完了条件
-
-- 生値グラフの軸だけを見て値の単位が分かる。
-- 同じ項目の規格値と測定値が同じ単位で表示される。
+一旦不要のため削除
 
 ---
 

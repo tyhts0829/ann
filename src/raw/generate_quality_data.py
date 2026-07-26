@@ -31,6 +31,7 @@ class Measurement(TypedDict):
     meta_ignore: bool
     meta_best: float | None
     meta_category: str
+    meta_unit: str
 
 
 MEASUREMENTS: tuple[Measurement, ...] = (
@@ -42,6 +43,7 @@ MEASUREMENTS: tuple[Measurement, ...] = (
         "meta_ignore": False,
         "meta_best": 0.000,
         "meta_category": "異物",
+        "meta_unit": "mm",
     },
     {
         "colname": "Foreign_Length_Short",
@@ -51,6 +53,7 @@ MEASUREMENTS: tuple[Measurement, ...] = (
         "meta_ignore": False,
         "meta_best": 0.000,
         "meta_category": "異物",
+        "meta_unit": "mm",
     },
     {
         "colname": "Foreign_Size",
@@ -60,6 +63,7 @@ MEASUREMENTS: tuple[Measurement, ...] = (
         "meta_ignore": False,
         "meta_best": 0.000,
         "meta_category": "異物",
+        "meta_unit": "mm²",
     },
     {
         "colname": "Lead_Length_L",
@@ -69,6 +73,7 @@ MEASUREMENTS: tuple[Measurement, ...] = (
         "meta_ignore": False,
         "meta_best": None,
         "meta_category": "リード",
+        "meta_unit": "mm",
     },
     {
         "colname": "Lead_Length_R",
@@ -78,6 +83,7 @@ MEASUREMENTS: tuple[Measurement, ...] = (
         "meta_ignore": False,
         "meta_best": None,
         "meta_category": "リード",
+        "meta_unit": "mm",
     },
     {
         "colname": "Lead_Pitch",
@@ -87,6 +93,7 @@ MEASUREMENTS: tuple[Measurement, ...] = (
         "meta_ignore": False,
         "meta_best": None,
         "meta_category": "リード",
+        "meta_unit": "mm",
     },
     {
         "colname": "Work_Xw",
@@ -96,6 +103,7 @@ MEASUREMENTS: tuple[Measurement, ...] = (
         "meta_ignore": False,
         "meta_best": None,
         "meta_category": "PKGサイズ",
+        "meta_unit": "mm",
     },
     {
         "colname": "Work_Yw",
@@ -105,6 +113,7 @@ MEASUREMENTS: tuple[Measurement, ...] = (
         "meta_ignore": False,
         "meta_best": None,
         "meta_category": "PKGサイズ",
+        "meta_unit": "mm",
     },
     {
         "colname": "Work_Center_X",
@@ -114,6 +123,7 @@ MEASUREMENTS: tuple[Measurement, ...] = (
         "meta_ignore": False,
         "meta_best": None,
         "meta_category": "PKGサイズ",
+        "meta_unit": "mm",
     },
     {
         "colname": "Work_Center_Y",
@@ -123,6 +133,7 @@ MEASUREMENTS: tuple[Measurement, ...] = (
         "meta_ignore": False,
         "meta_best": None,
         "meta_category": "PKGサイズ",
+        "meta_unit": "mm",
     },
     {
         "colname": "Mark_Center_X",
@@ -132,6 +143,7 @@ MEASUREMENTS: tuple[Measurement, ...] = (
         "meta_ignore": False,
         "meta_best": None,
         "meta_category": "標印",
+        "meta_unit": "mm",
     },
     {
         "colname": "Mark_Center_Y",
@@ -141,6 +153,7 @@ MEASUREMENTS: tuple[Measurement, ...] = (
         "meta_ignore": False,
         "meta_best": None,
         "meta_category": "標印",
+        "meta_unit": "mm",
     },
     {
         "colname": "Defect_Length_Long",
@@ -150,6 +163,7 @@ MEASUREMENTS: tuple[Measurement, ...] = (
         "meta_ignore": False,
         "meta_best": 0.000,
         "meta_category": "欠陥",
+        "meta_unit": "mm",
     },
     {
         "colname": "Defect_Length_Short",
@@ -159,6 +173,7 @@ MEASUREMENTS: tuple[Measurement, ...] = (
         "meta_ignore": False,
         "meta_best": 0.000,
         "meta_category": "欠陥",
+        "meta_unit": "mm",
     },
     {
         "colname": "Defect_Size",
@@ -168,6 +183,7 @@ MEASUREMENTS: tuple[Measurement, ...] = (
         "meta_ignore": False,
         "meta_best": 0.000,
         "meta_category": "欠陥",
+        "meta_unit": "mm²",
     },
 )
 
@@ -923,7 +939,7 @@ def _schema(seed: int, n_lots: int) -> pa.Schema:
     metadata = {
         b"dataset": b"discrete_semiconductor_final_inspection",
         b"dataset_stage": b"raw",
-        b"dataset_version": b"3.0",
+        b"dataset_version": b"4.0",
         b"baseline_noise": b"fractal_perlin_3d",
         b"perlin_octaves": b"4",
         b"perlin_period": str(PERLIN_PERIOD).encode(),
@@ -951,6 +967,7 @@ def _schema(seed: int, n_lots: int) -> pa.Schema:
             pa.field("meta_ignore", pa.bool_(), nullable=False),
             pa.field("meta_best", pa.float64(), nullable=True),
             pa.field("meta_category", pa.string(), nullable=False),
+            pa.field("meta_unit", pa.string(), nullable=False),
         ],
         metadata=metadata,
     )
@@ -1011,6 +1028,13 @@ def _long_metadata(
         "meta_category": np.tile(
             np.asarray(
                 [item["meta_category"] for item in MEASUREMENTS],
+                dtype=object,
+            ),
+            n_products,
+        ),
+        "meta_unit": np.tile(
+            np.asarray(
+                [item["meta_unit"] for item in MEASUREMENTS],
                 dtype=object,
             ),
             n_products,
@@ -1087,6 +1111,10 @@ def _write_manifest(
         "measurements_per_vision": len(MEASUREMENTS),
         "measurements_per_product": len(MEASUREMENTS) * VISION_COUNT,
         "unique_colname_count": len(MEASUREMENTS) * 3,
+        "meta_units": {
+            item["colname"]: item["meta_unit"]
+            for item in MEASUREMENTS
+        },
         "baseline_noise": {
             "type": "fractal_perlin_3d",
             "dimensions": [
@@ -1151,6 +1179,7 @@ def generate(
             "colname",
             "meta_type",
             "meta_category",
+            "meta_unit",
         ],
         write_statistics=True,
         version="2.6",

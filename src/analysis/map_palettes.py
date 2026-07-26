@@ -3,7 +3,6 @@
 import numpy as np
 import pyqtgraph as pg
 
-
 REDS = (
     "#fff5f0",
     "#fee0d2",
@@ -41,6 +40,17 @@ PURPLES = (
     "#3f007d",
 )
 
+DENSITY_STOPS = (
+    (0.00, "#ffffff"),
+    (0.03, "#eaf3fa"),
+    (0.12, "#b9dce9"),
+    (0.30, "#48a9bb"),
+    (0.52, "#62b88f"),
+    (0.68, "#f0d95b"),
+    (0.84, "#f18b3b"),
+    (1.00, "#c9342f"),
+)
+
 MAP_DEFINITIONS = (
     ("ng_rates", "NG率 (%)", REDS),
     ("normalized_mean", "規格位置・使用率 平均", RDBU_R),
@@ -58,3 +68,18 @@ def make_color_map(colors: tuple[str, ...]) -> pg.ColorMap:
         np.linspace(0.0, 1.0, len(colors)),
         rgb,
     )
+
+
+def make_density_color_map() -> pg.ColorMap:
+    """密度表示用の連続カラーマップ。"""
+    positions = np.asarray(
+        [position for position, _ in DENSITY_STOPS]
+    )
+    rgb = np.asarray(
+        [
+            pg.mkColor(color).getRgb()[:3]
+            for _, color in DENSITY_STOPS
+        ],
+        dtype=np.ubyte,
+    )
+    return pg.ColorMap(positions, rgb)

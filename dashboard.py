@@ -22,14 +22,46 @@ from src.analysis.kde import (
     KdeData,
     build_kde_data,
 )
+from src.analysis.quality_trend import (
+    QualityTrendData,
+    build_quality_trend_data,
+)
 from src.dashboard_config import DASHBOARD_CONFIG
 from src.standardized.quality_data import QualityRepository
+
+
+class DashboardScrollArea(QtWidgets.QScrollArea):
+    """内容幅を保った縦方向専用スクロール領域。"""
+
+    def setWidget(self, widget: QtWidgets.QWidget) -> None:
+        """スクロール対象Widgetの設定。"""
+        super().setWidget(widget)
+        self._resize_content()
+        QtCore.QTimer.singleShot(0, self._resize_content)
+
+    def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
+        """表示領域変更時の内容幅同期。"""
+        super().resizeEvent(event)
+        self._resize_content()
+
+    def _resize_content(self) -> None:
+        """内容幅のviewportへの同期。"""
+        content = self.widget()
+        if content is None:
+            return
+        content.resize(
+            self.viewport().width(),
+            max(
+                self.viewport().height(),
+                content.sizeHint().height(),
+            ),
+        )
 
 
 class DashboardDataWorker(QtCore.QObject):
     """表示用集計データのバックグラウンド読込。"""
 
-    loaded = QtCore.Signal(object, object, object)
+    loaded = QtCore.Signal(object, object, object, object)
     failed = QtCore.Signal(str)
 
     def __init__(self, parquet_path: Path) -> None:
@@ -38,7 +70,7 @@ class DashboardDataWorker(QtCore.QObject):
 
     @QtCore.Slot()
     def load(self) -> None:
-        """FQmap・Fmap・KDE集計データの生成。"""
+        """FQmap・Fmap・KDE・F推移集計データの生成。"""
         repository = QualityRepository(self.parquet_path)
         try:
             fq_map_data = build_fq_map_data(repository)
@@ -51,6 +83,10 @@ class DashboardDataWorker(QtCore.QObject):
                 repository,
                 lot_numbers,
             )
+            quality_trend_data = build_quality_trend_data(
+                repository,
+                lot_numbers,
+            )
         except Exception as error:
             self.failed.emit(str(error))
         else:
@@ -58,6 +94,7 @@ class DashboardDataWorker(QtCore.QObject):
                 fq_map_data,
                 frame_map_data,
                 kde_data,
+                quality_trend_data,
             )
         finally:
             repository.close()
@@ -73,6 +110,7 @@ class DashboardWindow(QtWidgets.QMainWindow):
         super().__init__()
         self.repository = repository
         self.fq_map: FqMapWidget | None = None
+        self.dashboard_scroll_area: DashboardScrollArea | None = None
         self._loader_thread: QtCore.QThread | None = None
         self._data_worker: DashboardDataWorker | None = None
         self._close_requested = False
@@ -119,7 +157,7 @@ class DashboardWindow(QtWidgets.QMainWindow):
         title.setObjectName("loadingTitle")
         title.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.loading_message = QtWidgets.QLabel(
-            "FQmap・Fmap・KDEの集計中です。"
+            "FQmap・Fmap・KDE・F推移の集計中です。"
             "しばらくお待ちください。"
         )
         self.loading_message.setObjectName("loadingMessage")
@@ -156,12 +194,13 @@ class DashboardWindow(QtWidgets.QMainWindow):
         self._data_worker = worker
         thread.start()
 
-    @QtCore.Slot(object, object, object)
+    @QtCore.Slot(object, object, object, object)
     def _show_dashboard(
         self,
         fq_map_data: FqMapData,
         frame_map_data: FrameMapData,
         kde_data: KdeData,
+        quality_trend_data: QualityTrendData,
     ) -> None:
         """集計済みデータによるダッシュボード表示。"""
         if self._close_requested:
@@ -171,10 +210,21 @@ class DashboardWindow(QtWidgets.QMainWindow):
             fq_map_data,
             frame_map_data,
             kde_data,
+            quality_trend_data,
         )
+        self.dashboard_scroll_area = DashboardScrollArea()
+        self.dashboard_scroll_area.setObjectName("dashboardScrollArea")
+        self.dashboard_scroll_area.setWidgetResizable(False)
+        self.dashboard_scroll_area.setFrameShape(
+            QtWidgets.QFrame.Shape.NoFrame
+        )
+        self.dashboard_scroll_area.setHorizontalScrollBarPolicy(
+            QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.dashboard_scroll_area.setWidget(self.fq_map)
         self.content_layout.replaceWidget(
             self.loading_widget,
-            self.fq_map,
+            self.dashboard_scroll_area,
         )
         self.loading_widget.deleteLater()
         self.data_loaded.emit()
@@ -236,6 +286,24 @@ QProgressBar#loadingProgress {
 QProgressBar#loadingProgress::chunk {
     background: #3a9a93;
 }
+QScrollArea#dashboardScrollArea {
+    background: #f3f5f7;
+    border: none;
+}
+QScrollArea#dashboardScrollArea QScrollBar:vertical {
+    background: #e4e8ed;
+    border: 1px solid #c2c9d2;
+    width: 10px;
+}
+QScrollArea#dashboardScrollArea QScrollBar::handle:vertical {
+    background: #3a9a93;
+    min-height: 42px;
+    margin: 1px;
+}
+QScrollArea#dashboardScrollArea QScrollBar::add-line:vertical,
+QScrollArea#dashboardScrollArea QScrollBar::sub-line:vertical {
+    height: 0;
+}
 QFrame#mapCard {
     background: #ffffff;
     border: 1px solid #d5dbe3;
@@ -282,7 +350,8 @@ QLabel#overviewBadge {
     font-weight: 600;
 }
 QWidget#frameMapLabelPanel,
-QWidget#kdeLabelPanel {
+QWidget#kdeLabelPanel,
+QWidget#qualityTrendLabelPanel {
     background: #f2f6fb;
     border-left: 4px solid #3157a4;
     border-right: 1px solid #d3deeb;
@@ -311,6 +380,31 @@ QLabel#kdeContextCaption {
 QLabel#kdeSummaryLabel {
     color: #667080;
     font-size: 11px;
+}
+QLabel#qualityTrendCaption {
+    color: #667080;
+    font-size: 10px;
+}
+QLabel#qualityTrendSelectionLabel {
+    color: #294d91;
+    font-size: 10px;
+    font-weight: 700;
+}
+QLabel#qualityTrendSummaryLabel {
+    color: #667080;
+    font-size: 10px;
+}
+QWidget#densityLegend {
+    background: #ffffff;
+}
+QLabel#densityLegendTitle {
+    color: #303846;
+    font-size: 8px;
+    font-weight: 600;
+}
+QLabel#densityLegendLabel {
+    color: #667080;
+    font-size: 8px;
 }
 QLabel#fieldLabel {
     color: #667080;
@@ -359,7 +453,7 @@ QLabel#ngRateLabel {
     color: #08766b;
     background: #e8f5f2;
     border: 1px solid #8fc9c1;
-    padding: 8px 13px;
+    padding: 8px 9px;
     font-size: 13px;
     font-weight: 700;
 }

@@ -125,6 +125,208 @@ class QualityRepository:
         """
         return self.connection.execute(query, parameters).df()
 
+    def density_bins_by_colname_frame(
+        self,
+        bins: int,
+        lot_numbers: tuple[str, ...] | None = None,
+    ) -> pd.DataFrame:
+        """lot・FrameNo・検査項目別の密度bin集計。"""
+        if lot_numbers is None:
+            lot_numbers = tuple(record[0] for record in self.lots())
+        placeholders = ", ".join("?" for _ in lot_numbers)
+        lot_filter = f"AND lot_number IN ({placeholders})"
+        bounds_query = f"""
+            CREATE OR REPLACE TEMP TABLE quality_density_bounds AS
+            WITH frame_stats AS (
+                SELECT
+                    colname,
+                    lot_number,
+                    FrameNo,
+                    min(value) AS value_min,
+                    max(value) AS value_max,
+                    avg(value) AS value_mean,
+                    stddev_pop(value) AS value_std,
+                    min(limmin) AS spec_lower,
+                    max(limmax) AS spec_upper,
+                    min(meta_best) AS spec_best,
+                    any_value(meta_unit) AS meta_unit
+                FROM read_parquet(?)
+                WHERE meta_type = 'spec'
+                  AND NOT meta_ignore
+                  {lot_filter}
+                GROUP BY colname, lot_number, FrameNo
+            ),
+            colname_stats AS (
+                SELECT
+                    colname,
+                    greatest(
+                        min(value_min),
+                        min(value_mean - 3.5 * value_std)
+                    ) AS core_min,
+                    least(
+                        max(value_max),
+                        max(value_mean + 3.5 * value_std)
+                    ) AS core_max,
+                    min(spec_lower) AS spec_lower,
+                    max(spec_upper) AS spec_upper,
+                    min(spec_best) AS spec_best,
+                    any_value(meta_unit) AS meta_unit
+                FROM frame_stats
+                GROUP BY colname
+            ),
+            raw_bounds AS (
+                SELECT
+                    *,
+                    least(
+                        core_min,
+                        coalesce(spec_lower, core_min),
+                        coalesce(spec_upper, core_min),
+                        coalesce(spec_best, core_min)
+                    ) AS raw_min,
+                    greatest(
+                        core_max,
+                        coalesce(spec_lower, core_max),
+                        coalesce(spec_upper, core_max),
+                        coalesce(spec_best, core_max)
+                    ) AS raw_max
+                FROM colname_stats
+            )
+            SELECT
+                colname,
+                CASE
+                    WHEN spec_lower IS NULL
+                     AND spec_best IS NOT NULL
+                    THEN least(spec_best, raw_min)
+                    ELSE raw_min - greatest(
+                        raw_max - raw_min,
+                        abs(raw_max) * 0.01,
+                        1e-9
+                    ) * 0.04
+                END AS plot_min,
+                raw_max + greatest(
+                    raw_max - raw_min,
+                    abs(raw_max) * 0.01,
+                    1e-9
+                ) * 0.04 AS plot_max,
+                spec_lower,
+                spec_upper,
+                meta_unit
+            FROM raw_bounds
+        """
+        self.connection.execute(
+            bounds_query,
+            [str(self.parquet_path), *lot_numbers],
+        )
+
+        frames = []
+        for start in range(0, len(lot_numbers), 10):
+            batch = lot_numbers[start : start + 10]
+            batch_placeholders = ", ".join("?" for _ in batch)
+            query = f"""
+                WITH binned AS (
+                    SELECT
+                        quality.lot_number,
+                        quality.FrameNo,
+                        quality.colname,
+                        CASE
+                            WHEN quality.value IS NULL
+                            THEN NULL
+                            WHEN quality.value < bounds.plot_min
+                              OR quality.value > bounds.plot_max
+                            THEN NULL
+                            ELSE least(
+                                {bins - 1},
+                                cast(
+                                    floor(
+                                        (quality.value - bounds.plot_min)
+                                        / (
+                                            bounds.plot_max
+                                            - bounds.plot_min
+                                        )
+                                        * {bins}
+                                    )
+                                    AS INTEGER
+                                )
+                            )
+                        END AS bin_index,
+                        bounds.plot_min,
+                        bounds.plot_max,
+                        bounds.spec_lower,
+                        bounds.spec_upper,
+                        bounds.meta_unit,
+                        CASE
+                            WHEN (
+                                quality.limmin IS NOT NULL
+                                AND quality.value < quality.limmin
+                            )
+                              OR (
+                                quality.limmax IS NOT NULL
+                                AND quality.value > quality.limmax
+                            )
+                            THEN 1
+                            ELSE 0
+                        END AS is_ng,
+                        quality.value
+                    FROM read_parquet(?) AS quality
+                    JOIN quality_density_bounds AS bounds
+                      ON quality.colname = bounds.colname
+                    WHERE quality.meta_type = 'spec'
+                      AND NOT quality.meta_ignore
+                      AND quality.lot_number IN ({batch_placeholders})
+                ),
+                bin_counts AS (
+                    SELECT
+                        lot_number,
+                        FrameNo,
+                        colname,
+                        bin_index,
+                        any_value(plot_min) AS plot_min,
+                        any_value(plot_max) AS plot_max,
+                        any_value(spec_lower) AS spec_lower,
+                        any_value(spec_upper) AS spec_upper,
+                        any_value(meta_unit) AS meta_unit,
+                        count(value) AS sample_count,
+                        sum(is_ng) AS ng_count
+                    FROM binned
+                    GROUP BY lot_number, FrameNo, colname, bin_index
+                )
+                SELECT
+                    lot_number,
+                    FrameNo,
+                    colname,
+                    coalesce(
+                        list(bin_index ORDER BY bin_index)
+                            FILTER (WHERE bin_index IS NOT NULL),
+                        []::INTEGER[]
+                    ) AS bin_indices,
+                    coalesce(
+                        list(sample_count ORDER BY bin_index)
+                            FILTER (WHERE bin_index IS NOT NULL),
+                        []::BIGINT[]
+                    ) AS bin_counts,
+                    sum(sample_count) AS sample_count,
+                    coalesce(
+                        sum(sample_count)
+                            FILTER (WHERE bin_index IS NOT NULL),
+                        0
+                    ) AS in_range_count,
+                    sum(ng_count) AS ng_count,
+                    any_value(plot_min) AS plot_min,
+                    any_value(plot_max) AS plot_max,
+                    any_value(spec_lower) AS spec_lower,
+                    any_value(spec_upper) AS spec_upper,
+                    any_value(meta_unit) AS meta_unit
+                FROM bin_counts
+                GROUP BY lot_number, FrameNo, colname
+            """
+            frames.append(
+                self.connection.execute(
+                    query,
+                    [str(self.parquet_path), *batch],
+                ).df()
+            )
+        return pd.concat(frames, ignore_index=True)
+
     def kde_bins_by_colname_lot(
         self,
         bins: int,

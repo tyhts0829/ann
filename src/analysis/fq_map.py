@@ -14,9 +14,9 @@ import pyqtgraph as pg
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from src.analysis.frame_map import (
+    VISIBLE_LOTS,
     FrameMapData,
     FrameMapWidget,
-    VISIBLE_LOTS,
 )
 from src.analysis.kde import (
     KdeData,
@@ -24,14 +24,19 @@ from src.analysis.kde import (
     build_kde_data,
 )
 from src.analysis.map_palettes import MAP_DEFINITIONS, make_color_map
+from src.analysis.plot_style import make_lot_separator
 from src.analysis.quality_columns import (
     CATEGORY_ORDER,
     SPEC_ORDER,
     VISION_ORDER,
 )
+from src.analysis.quality_trend import (
+    QualityTrendData,
+    QualityTrendWidget,
+    build_quality_trend_data,
+)
 from src.dashboard_config import DASHBOARD_CONFIG
 from src.standardized.quality_data import QualityRepository
-
 
 FRAME_NUMBERS = np.arange(1, 25)
 FRAME_TICK_NUMBERS = (1, 6, 12, 18, 24)
@@ -39,6 +44,7 @@ VISIBLE_COLUMNS = len(FRAME_NUMBERS) * VISIBLE_LOTS
 FQ_MAP_SECTION_HEIGHT = DASHBOARD_CONFIG.fqmap_height
 FMAP_SECTION_HEIGHT = DASHBOARD_CONFIG.fmap_height
 KDE_SECTION_HEIGHT = DASHBOARD_CONFIG.kde_height
+QUALITY_TREND_SECTION_HEIGHT = DASHBOARD_CONFIG.quality_trend_height
 FQ_MAP_PLOT_HEIGHT = DASHBOARD_CONFIG.fqmap_plot_height
 FQ_MAP_LOT_AXIS_HEIGHT = 24
 FQ_MAP_FRAME_AXIS_HEIGHT = 20
@@ -266,6 +272,7 @@ class FqMapWidget(QtWidgets.QWidget):
         full_data: FqMapData | None = None,
         frame_map_data: FrameMapData | None = None,
         kde_data: KdeData | None = None,
+        quality_trend_data: QualityTrendData | None = None,
     ) -> None:
         super().__init__()
         self.repository = repository
@@ -283,6 +290,14 @@ class FqMapWidget(QtWidgets.QWidget):
             if kde_data is None
             else kde_data
         )
+        self.quality_trend_data = (
+            build_quality_trend_data(
+                repository,
+                self.full_data.lot_numbers,
+            )
+            if quality_trend_data is None
+            else quality_trend_data
+        )
         self.current_data = self.full_data
         self.selected_colname = self.full_data.colnames[0]
         self.views: list[FqMapView] = []
@@ -298,6 +313,9 @@ class FqMapWidget(QtWidgets.QWidget):
         self.fq_map_section = self._build_fq_map_section()
         self.fmap_section = self._build_fmap_section()
         self.kde_section = self._build_kde_section()
+        self.quality_trend_section = (
+            self._build_quality_trend_section()
+        )
         self.detail_section = self._build_detail_section()
         layout.addWidget(self.fq_map_section)
         layout.addWidget(self.detail_section)
@@ -330,14 +348,14 @@ class FqMapWidget(QtWidgets.QWidget):
         category_label.setObjectName("fieldLabel")
         self.category_combo = QtWidgets.QComboBox()
         self.category_combo.setObjectName("categoryCombo")
-        self.category_combo.setMinimumWidth(150)
+        self.category_combo.setMinimumWidth(120)
         self.category_combo.setAccessibleName("カテゴリフィルター")
 
         vision_label = QtWidgets.QLabel("Vision")
         vision_label.setObjectName("fieldLabel")
         self.vision_combo = QtWidgets.QComboBox()
         self.vision_combo.setObjectName("visionCombo")
-        self.vision_combo.setMinimumWidth(125)
+        self.vision_combo.setMinimumWidth(105)
         self.vision_combo.setAccessibleName("Visionフィルター")
 
         self.ng_rate_label = QtWidgets.QLabel()
@@ -442,6 +460,22 @@ class FqMapWidget(QtWidgets.QWidget):
         layout.addWidget(self.kde)
         return section
 
+    def _build_quality_trend_section(self) -> QtWidgets.QWidget:
+        """固定高のF推移セクション。"""
+        section = QtWidgets.QFrame()
+        section.setObjectName("detailSubsection")
+        section.setFixedHeight(QUALITY_TREND_SECTION_HEIGHT)
+        layout = QtWidgets.QVBoxLayout(section)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.quality_trend = QualityTrendWidget(
+            self.quality_trend_data
+        )
+        self.quality_trend.hover_text_changed.connect(
+            self._set_quality_trend_hover_text
+        )
+        layout.addWidget(self.quality_trend)
+        return section
+
     def _build_detail_section(self) -> QtWidgets.QWidget:
         """選択項目の詳細セクション。"""
         section = QtWidgets.QFrame()
@@ -449,6 +483,8 @@ class FqMapWidget(QtWidgets.QWidget):
         section.setFixedHeight(
             FMAP_SECTION_HEIGHT
             + KDE_SECTION_HEIGHT
+            + QUALITY_TREND_SECTION_HEIGHT
+            + DETAIL_DIVIDER_HEIGHT
             + DETAIL_DIVIDER_HEIGHT
             + 2
         )
@@ -462,6 +498,14 @@ class FqMapWidget(QtWidgets.QWidget):
         self.detail_divider.setFixedHeight(DETAIL_DIVIDER_HEIGHT)
         layout.addWidget(self.detail_divider)
         layout.addWidget(self.kde_section)
+
+        self.quality_trend_divider = QtWidgets.QFrame()
+        self.quality_trend_divider.setObjectName("detailDivider")
+        self.quality_trend_divider.setFixedHeight(
+            DETAIL_DIVIDER_HEIGHT
+        )
+        layout.addWidget(self.quality_trend_divider)
+        layout.addWidget(self.quality_trend_section)
         return section
 
     def _build_fq_map_view(
@@ -472,8 +516,9 @@ class FqMapWidget(QtWidgets.QWidget):
     ) -> FqMapView:
         card = QtWidgets.QFrame()
         card.setObjectName("chartCard")
-        layout = QtWidgets.QVBoxLayout(card)
+        layout = QtWidgets.QHBoxLayout(card)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
         plot_widget = pg.PlotWidget(background="#ffffff")
         plot_item = plot_widget.getPlotItem()
@@ -481,7 +526,9 @@ class FqMapWidget(QtWidgets.QWidget):
         plot_item.hideButtons()
         plot_item.setMouseEnabled(x=False, y=False)
         plot_item.getViewBox().invertY(True)
-        plot_item.getAxis("left").setWidth(205)
+        plot_item.getAxis("left").setWidth(
+            DASHBOARD_CONFIG.left_label_width
+        )
         plot_item.hideAxis("bottom")
         frame_axis = None
         if metric == "ng_rates":
@@ -557,11 +604,25 @@ class FqMapWidget(QtWidgets.QWidget):
             rounding=0.1,
             pen=pg.mkPen("#5f6875"),
         )
-        color_bar.setImageItem(image_item, insert_in=plot_item)
+        color_bar.setImageItem(image_item)
         color_bar.axis.setTextPen(pg.mkPen("#303846"))
         color_bar.axis.setLabel(color="#4b5563")
 
-        layout.addWidget(plot_widget)
+        legend = pg.GraphicsLayoutWidget()
+        legend.setBackground("#ffffff")
+        legend.addItem(color_bar)
+        legend_container = QtWidgets.QWidget()
+        legend_container.setFixedWidth(
+            DASHBOARD_CONFIG.color_bar_width
+        )
+        legend_layout = QtWidgets.QVBoxLayout(legend_container)
+        legend_layout.setContentsMargins(0, 0, 0, 0)
+        legend_layout.setSpacing(0)
+        if metric == "ng_rates":
+            legend_layout.addSpacing(FQ_MAP_TOP_AXIS_HEIGHT)
+        legend_layout.addWidget(legend)
+        layout.addWidget(plot_widget, stretch=1)
+        layout.addWidget(legend_container)
         view = FqMapView(
             metric=metric,
             label=label,
@@ -828,6 +889,10 @@ class FqMapWidget(QtWidgets.QWidget):
             self.selected_colname,
             first_lot,
         )
+        self.quality_trend.set_context(
+            self.selected_colname,
+            first_lot,
+        )
 
     def _select_fq_row(
         self,
@@ -872,6 +937,10 @@ class FqMapWidget(QtWidgets.QWidget):
             )
         self.fmap_selection_label.setText(self.selected_colname)
         self.kde.set_context(
+            self.selected_colname,
+            self.horizontal_scrollbar.value(),
+        )
+        self.quality_trend.set_context(
             self.selected_colname,
             self.horizontal_scrollbar.value(),
         )
@@ -957,13 +1026,9 @@ class FqMapWidget(QtWidgets.QWidget):
         view.separators.clear()
 
         for lot_index in range(1, data.lot_count):
-            separator = pg.InfiniteLine(
-                pos=lot_index * len(FRAME_NUMBERS) - 0.5,
-                angle=90,
-                movable=False,
-                pen=pg.mkPen("#8f99a6", width=1),
+            separator = make_lot_separator(
+                lot_index * len(FRAME_NUMBERS) - 0.5
             )
-            separator.setZValue(20)
             view.plot_item.addItem(separator)
             view.separators.append(separator)
 
@@ -979,8 +1044,8 @@ class FqMapWidget(QtWidgets.QWidget):
         self.all_lots_label.setText(f"全{data.lot_count} lot")
         self._update_scope_label(data, category, vision)
         self.ng_rate_label.setText(
-            f"総合NG率  {data.overall_ng_rate:.3f}%"
-            f"   ({data.total_ng:,} NG)"
+            f"総合NG率 {data.overall_ng_rate:.3f}%"
+            f" ({data.total_ng:,} NG)"
         )
         self.scale_label.setText(
             f"NG 0–{ng_max:g}%  |  "
@@ -994,12 +1059,17 @@ class FqMapWidget(QtWidgets.QWidget):
         vision: str | None,
     ) -> None:
         """表示範囲の要約。"""
-        category_text = category if category is not None else "全カテゴリ"
-        vision_text = vision if vision is not None else "全vision"
+        category_text = category if category is not None else "全"
+        vision_text = vision if vision is not None else "全"
+        measurement_count = data.total_measurements
         self.scope_label.setText(
+            f"{len(data.colnames)}項目  |  "
+            f"{measurement_count / 1_000_000:.1f}M測定"
+        )
+        self.scope_label.setToolTip(
             f"{category_text} / {vision_text}  |  "
             f"{len(data.colnames)}項目  |  "
-            f"{data.total_measurements:,}測定"
+            f"{measurement_count:,}測定"
         )
 
     def _show_hover_details(
@@ -1053,6 +1123,14 @@ class FqMapWidget(QtWidgets.QWidget):
         self.hover_label.setText(
             "セルにカーソルを合わせると詳細を表示"
         )
+
+    @QtCore.Slot(str)
+    def _set_quality_trend_hover_text(self, text: str) -> None:
+        """F推移ホバー詳細のフッター反映。"""
+        if text:
+            self.hover_label.setText(text)
+        else:
+            self._reset_hover_text()
 
     @staticmethod
     def _nice_upper(max_value: float, minimum: float) -> float:

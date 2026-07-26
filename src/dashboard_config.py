@@ -21,6 +21,7 @@ class DashboardConfig:
     fqmap_height_ratio: float
     fmap_height_ratio: float
     kde_height_ratio: float
+    quality_trend_height_ratio: float
     fqmap_plot_height: int
     kde_bins: int
     kde_bandwidth_bins: float
@@ -42,6 +43,13 @@ class DashboardConfig:
         """KDE領域の固定高。"""
         return round(self.height_unit * self.kde_height_ratio)
 
+    @property
+    def quality_trend_height(self) -> int:
+        """F推移領域の固定高。"""
+        return round(
+            self.height_unit * self.quality_trend_height_ratio
+        )
+
 
 def load_dashboard_config(
     path: Path = CONFIG_PATH,
@@ -60,6 +68,9 @@ def load_dashboard_config(
         fqmap_height_ratio=float(layout["fqmap_height_ratio"]),
         fmap_height_ratio=float(layout["fmap_height_ratio"]),
         kde_height_ratio=float(layout["kde_height_ratio"]),
+        quality_trend_height_ratio=float(
+            layout["quality_trend_height_ratio"]
+        ),
         fqmap_plot_height=int(layout["fqmap_plot_height"]),
         kde_bins=int(layout["kde_bins"]),
         kde_bandwidth_bins=float(layout["kde_bandwidth_bins"]),

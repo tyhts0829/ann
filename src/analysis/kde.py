@@ -10,9 +10,12 @@ import numpy as np
 import pyqtgraph as pg
 from PySide6 import QtCore, QtGui, QtWidgets
 
+from src.analysis.plot_style import make_lot_separator_widget
 from src.analysis.quality_columns import SPEC_ORDER
 from src.dashboard_config import DASHBOARD_CONFIG
 from src.standardized.quality_data import QualityRepository
+
+KDE_BOTTOM_AXIS_HEIGHT = 28
 
 
 @dataclass(frozen=True)
@@ -172,6 +175,7 @@ class KdeWidget(QtWidgets.QWidget):
         self.lower_lines: list[pg.InfiniteLine] = []
         self.center_lines: list[pg.InfiniteLine] = []
         self.upper_lines: list[pg.InfiniteLine] = []
+        self.lot_separators: list[QtWidgets.QFrame] = []
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -180,21 +184,23 @@ class KdeWidget(QtWidgets.QWidget):
         layout.setSpacing(0)
         layout.addWidget(self._build_context_panel())
 
-        for _ in range(DASHBOARD_CONFIG.visible_lots):
+        for lot_offset in range(DASHBOARD_CONFIG.visible_lots):
+            if lot_offset:
+                separator = make_lot_separator_widget(
+                    KDE_BOTTOM_AXIS_HEIGHT
+                )
+                self.lot_separators.append(separator)
+                layout.addWidget(separator)
             plot_widget = pg.PlotWidget(background="#ffffff")
             plot_item = plot_widget.getPlotItem()
             plot_item.setMenuEnabled(False)
             plot_item.hideButtons()
             plot_item.hideAxis("left")
             plot_item.setMouseEnabled(x=False, y=False)
-            plot_item.getViewBox().setBorder(
-                pg.mkPen("#dce2e8", width=0.8)
-            )
-
             axis = plot_item.getAxis("bottom")
             axis_font = QtGui.QFont()
             axis_font.setPointSize(6)
-            axis.setHeight(28)
+            axis.setHeight(KDE_BOTTOM_AXIS_HEIGHT)
             axis.setPen(pg.mkPen("#7a8492"))
             axis.setTextPen(pg.mkPen("#303846"))
             axis.setStyle(tickFont=axis_font, tickTextOffset=3)

@@ -37,7 +37,7 @@ def _standardized_schema(
     metadata.update(
         {
             b"dataset_stage": b"standardized",
-            b"dataset_version": b"3.1",
+            b"dataset_version": b"4.1",
             b"source_file": input_path.name.encode(),
             b"spec_position_formula": SPEC_POSITION_FORMULA.encode(),
             b"spec_usage_formula": SPEC_USAGE_FORMULA.encode(),
@@ -123,6 +123,7 @@ def _write_manifest(
             "spec_position": SPEC_POSITION_FORMULA,
             "spec_usage": SPEC_USAGE_FORMULA,
         },
+        "metadata_columns": ["meta_unit"],
     }
     manifest_path = output_path.with_name(
         f"{output_path.stem}_manifest.json"
@@ -158,6 +159,7 @@ def standardize(
             "colname",
             "meta_type",
             "meta_category",
+            "meta_unit",
         ],
         write_statistics=True,
         version="2.6",
