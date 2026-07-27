@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+import tomllib
 
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "config.toml"
 
@@ -23,6 +23,7 @@ class DashboardConfig:
     kde_height_ratio: float
     quality_trend_height_ratio: float
     fqmap_plot_height: int
+    fqmap_min_cell_height: int
     kde_bins: int
     kde_bandwidth_bins: float
     left_label_width: int
@@ -72,6 +73,9 @@ def load_dashboard_config(
             layout["quality_trend_height_ratio"]
         ),
         fqmap_plot_height=int(layout["fqmap_plot_height"]),
+        fqmap_min_cell_height=int(
+            layout["fqmap_min_cell_height"]
+        ),
         kde_bins=int(layout["kde_bins"]),
         kde_bandwidth_bins=float(layout["kde_bandwidth_bins"]),
         left_label_width=int(layout["left_label_width"]),

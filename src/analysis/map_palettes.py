@@ -14,18 +14,16 @@ REDS = (
     "#99000d",
 )
 
-RDBU_R = (
-    "#053061",
-    "#2166ac",
-    "#4393c3",
-    "#92c5de",
-    "#d1e5f0",
-    "#f7f7f7",
-    "#fddbc7",
-    "#f4a582",
-    "#d6604d",
-    "#b2182b",
-    "#67001f",
+BLUES = (
+    "#f7fbff",
+    "#deebf7",
+    "#c6dbef",
+    "#9ecae1",
+    "#6baed6",
+    "#4292c6",
+    "#2171b5",
+    "#08519c",
+    "#08306b",
 )
 
 PURPLES = (
@@ -40,20 +38,9 @@ PURPLES = (
     "#3f007d",
 )
 
-DENSITY_STOPS = (
-    (0.00, "#ffffff"),
-    (0.03, "#eaf3fa"),
-    (0.12, "#b9dce9"),
-    (0.30, "#48a9bb"),
-    (0.52, "#62b88f"),
-    (0.68, "#f0d95b"),
-    (0.84, "#f18b3b"),
-    (1.00, "#c9342f"),
-)
-
 MAP_DEFINITIONS = (
     ("ng_rates", "NG率 (%)", REDS),
-    ("normalized_mean", "規格位置・使用率 平均", RDBU_R),
+    ("normalized_mean", "規格逸脱度 平均", BLUES),
     ("normalized_std", "規格位置・使用率 std", PURPLES),
 )
 
@@ -68,18 +55,3 @@ def make_color_map(colors: tuple[str, ...]) -> pg.ColorMap:
         np.linspace(0.0, 1.0, len(colors)),
         rgb,
     )
-
-
-def make_density_color_map() -> pg.ColorMap:
-    """密度表示用の連続カラーマップ。"""
-    positions = np.asarray(
-        [position for position, _ in DENSITY_STOPS]
-    )
-    rgb = np.asarray(
-        [
-            pg.mkColor(color).getRgb()[:3]
-            for _, color in DENSITY_STOPS
-        ],
-        dtype=np.ubyte,
-    )
-    return pg.ColorMap(positions, rgb)

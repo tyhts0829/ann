@@ -10,7 +10,10 @@ import numpy as np
 import pyqtgraph as pg
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from src.analysis.plot_style import make_lot_separator_widget
+from src.analysis.plot_style import (
+    LotSeparatorWidget,
+    make_lot_separator_widget,
+)
 from src.analysis.quality_columns import SPEC_ORDER
 from src.dashboard_config import DASHBOARD_CONFIG
 from src.standardized.quality_data import QualityRepository
@@ -175,7 +178,7 @@ class KdeWidget(QtWidgets.QWidget):
         self.lower_lines: list[pg.InfiniteLine] = []
         self.center_lines: list[pg.InfiniteLine] = []
         self.upper_lines: list[pg.InfiniteLine] = []
-        self.lot_separators: list[QtWidgets.QFrame] = []
+        self.lot_separators: list[LotSeparatorWidget] = []
         self._build_ui()
 
     def _build_ui(self) -> None:

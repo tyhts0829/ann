@@ -17,6 +17,9 @@ from src.analysis.frame_map import (
     VISIBLE_LOTS,
     FrameMapData,
     FrameMapWidget,
+    SingleFrameMapData,
+    SingleFrameMapWidget,
+    build_single_frame_map_data,
 )
 from src.analysis.kde import (
     KdeData,
@@ -25,6 +28,7 @@ from src.analysis.kde import (
 )
 from src.analysis.map_palettes import MAP_DEFINITIONS, make_color_map
 from src.analysis.plot_style import make_lot_separator
+from src.analysis.processing_path_widget import ProcessingPathWidget
 from src.analysis.quality_columns import (
     CATEGORY_ORDER,
     SPEC_ORDER,
@@ -34,6 +38,10 @@ from src.analysis.quality_trend import (
     QualityTrendData,
     QualityTrendWidget,
     build_quality_trend_data,
+)
+from src.analysis.single_frame_kde import (
+    SingleFrameKdeWidget,
+    build_single_frame_kde_data,
 )
 from src.dashboard_config import DASHBOARD_CONFIG
 from src.standardized.quality_data import QualityRepository
@@ -46,6 +54,7 @@ FMAP_SECTION_HEIGHT = DASHBOARD_CONFIG.fmap_height
 KDE_SECTION_HEIGHT = DASHBOARD_CONFIG.kde_height
 QUALITY_TREND_SECTION_HEIGHT = DASHBOARD_CONFIG.quality_trend_height
 FQ_MAP_PLOT_HEIGHT = DASHBOARD_CONFIG.fqmap_plot_height
+FQ_MAP_MIN_CELL_HEIGHT = DASHBOARD_CONFIG.fqmap_min_cell_height
 FQ_MAP_LOT_AXIS_HEIGHT = 24
 FQ_MAP_FRAME_AXIS_HEIGHT = 20
 FQ_MAP_TOP_AXIS_HEIGHT = (
@@ -61,6 +70,55 @@ class SceneMouseEvent(Protocol):
     def scenePos(self) -> QtCore.QPointF:
         """シーン座標。"""
         ...
+
+
+class FqMapPlotWidget(pg.PlotWidget):
+    """行単位の縦スクロールを持つFQmap。"""
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)
+        self._vertical_scrollbar: QtWidgets.QScrollBar | None = None
+        self._wheel_remainder = 0
+        self._last_wheel_delta = 0
+
+    def set_vertical_scrollbar(
+        self,
+        scrollbar: QtWidgets.QScrollBar,
+    ) -> None:
+        """同期対象の行スクロールバー設定。"""
+        self._vertical_scrollbar = scrollbar
+
+    def wheelEvent(self, event: QtGui.QWheelEvent) -> None:
+        """ホイール操作の行スクロール変換。"""
+        pixel_delta = event.pixelDelta().y()
+        delta = pixel_delta or event.angleDelta().y()
+        scrollbar = self._vertical_scrollbar
+        if scrollbar is None or delta == 0:
+            event.ignore()
+            return
+
+        direction = -1 if delta > 0 else 1
+        can_scroll = (
+            direction < 0 and scrollbar.value() > scrollbar.minimum()
+        ) or (
+            direction > 0 and scrollbar.value() < scrollbar.maximum()
+        )
+        if not can_scroll:
+            self._wheel_remainder = 0
+            self._last_wheel_delta = 0
+            event.ignore()
+            return
+
+        if delta * self._last_wheel_delta < 0:
+            self._wheel_remainder = 0
+        self._last_wheel_delta = delta
+        self._wheel_remainder -= delta
+        unit = FQ_MAP_MIN_CELL_HEIGHT if pixel_delta else 40
+        rows = math.trunc(self._wheel_remainder / unit)
+        self._wheel_remainder -= rows * unit
+        if rows:
+            scrollbar.setValue(scrollbar.value() + rows)
+        event.accept()
 
 
 @dataclass(frozen=True)
@@ -79,6 +137,8 @@ class FqMapData:
     normalized_std: np.ndarray
     ng_counts: np.ndarray
     total_counts: np.ndarray
+    piece_ng_masks: np.ndarray
+    colname_bits: np.ndarray
 
     @property
     def total_ng(self) -> int:
@@ -89,8 +149,23 @@ class FqMapData:
         return int(self.total_counts.sum())
 
     @property
-    def overall_ng_rate(self) -> float:
-        return 100.0 * self.total_ng / self.total_measurements
+    def total_pieces(self) -> int:
+        return len(self.piece_ng_masks)
+
+    @property
+    def ng_pieces(self) -> int:
+        selected_bits = np.bitwise_or.reduce(self.colname_bits)
+        return int(
+            np.count_nonzero(self.piece_ng_masks & selected_bits)
+        )
+
+    @property
+    def ok_pieces(self) -> int:
+        return self.total_pieces - self.ng_pieces
+
+    @property
+    def piece_yield(self) -> float:
+        return 100.0 * self.ok_pieces / self.total_pieces
 
     @property
     def lot_count(self) -> int:
@@ -128,6 +203,8 @@ class FqMapData:
             normalized_std=self.normalized_std[row_indices],
             ng_counts=self.ng_counts[row_indices],
             total_counts=self.total_counts[row_indices],
+            piece_ng_masks=self.piece_ng_masks,
+            colname_bits=self.colname_bits[row_indices],
         )
 
     def filter_category(self, category: str | None) -> FqMapData:
@@ -150,7 +227,9 @@ class FqMapView:
     plot_item: pg.PlotItem
     image_item: pg.ImageItem
     color_bar: pg.ColorBarItem
+    vertical_scrollbar: QtWidgets.QScrollBar
     selection_region: pg.LinearRegionItem
+    cell_selection_rect: QtWidgets.QGraphicsRectItem
     frame_axis: pg.AxisItem | None = None
     separators: list[pg.InfiniteLine] = field(default_factory=list)
     mouse_proxy: pg.SignalProxy | None = None
@@ -236,6 +315,14 @@ def build_fq_map_data(
             lot_numbers,
             fill_value=0.0,
         ),
+        piece_ng_masks=repository.piece_ng_masks(
+            colnames,
+            lot_numbers,
+        ),
+        colname_bits=np.left_shift(
+            np.uint64(1),
+            np.arange(len(colnames), dtype=np.uint64),
+        ),
     )
 
 
@@ -264,7 +351,7 @@ def _matrix(
 
 
 class FqMapWidget(QtWidgets.QWidget):
-    """NG率・規格位置平均・標準偏差の3段FQマップ。"""
+    """NG率・規格逸脱度・標準偏差の3段FQマップ。"""
 
     def __init__(
         self,
@@ -300,6 +387,10 @@ class FqMapWidget(QtWidgets.QWidget):
         )
         self.current_data = self.full_data
         self.selected_colname = self.full_data.colnames[0]
+        self.selected_lot_index: int | None = None
+        self.selected_frame_no: int | None = None
+        self.single_frame_data: SingleFrameMapData | None = None
+        self.detail_mode = "lot"
         self.views: list[FqMapView] = []
         self.fq_map_separators: list[QtWidgets.QFrame] = []
         self._build_ui()
@@ -358,8 +449,8 @@ class FqMapWidget(QtWidgets.QWidget):
         self.vision_combo.setMinimumWidth(105)
         self.vision_combo.setAccessibleName("Visionフィルター")
 
-        self.ng_rate_label = QtWidgets.QLabel()
-        self.ng_rate_label.setObjectName("ngRateLabel")
+        self.piece_yield_label = QtWidgets.QLabel()
+        self.piece_yield_label.setObjectName("pieceYieldLabel")
 
         layout.addWidget(fq_map_title)
         layout.addWidget(overview_badge)
@@ -373,7 +464,7 @@ class FqMapWidget(QtWidgets.QWidget):
         layout.addWidget(vision_label)
         layout.addWidget(self.vision_combo)
         layout.addSpacing(8)
-        layout.addWidget(self.ng_rate_label)
+        layout.addWidget(self.piece_yield_label)
         return card
 
     def _build_fq_map_section(self) -> QtWidgets.QWidget:
@@ -401,7 +492,7 @@ class FqMapWidget(QtWidgets.QWidget):
             QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
         self.vertical_scroll_area.setVerticalScrollBarPolicy(
-            QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded
+            QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
 
         self.plots_container = QtWidgets.QWidget()
@@ -445,6 +536,9 @@ class FqMapWidget(QtWidgets.QWidget):
             self.full_data.lot_numbers,
             self.frame_map_data,
         )
+        self.frame_map.frame_mode_requested.connect(
+            self.show_selected_frame
+        )
         self.fmap_selection_label = self.frame_map.selection_label
         layout.addWidget(self.frame_map)
         return section
@@ -477,7 +571,7 @@ class FqMapWidget(QtWidgets.QWidget):
         return section
 
     def _build_detail_section(self) -> QtWidgets.QWidget:
-        """選択項目の詳細セクション。"""
+        """lot集約と選択Frameの詳細セクション。"""
         section = QtWidgets.QFrame()
         section.setObjectName("detailGroup")
         section.setFixedHeight(
@@ -488,16 +582,23 @@ class FqMapWidget(QtWidgets.QWidget):
             + DETAIL_DIVIDER_HEIGHT
             + 2
         )
-        layout = QtWidgets.QVBoxLayout(section)
+        self.detail_stack = QtWidgets.QStackedLayout(section)
+        self.detail_stack.setContentsMargins(0, 0, 0, 0)
+        self.lot_detail_page = self._build_lot_detail_page()
+        self.frame_detail_page = self._build_frame_detail_page()
+        self.detail_stack.addWidget(self.lot_detail_page)
+        self.detail_stack.addWidget(self.frame_detail_page)
+        self.detail_stack.setCurrentWidget(self.lot_detail_page)
+        return section
+
+    def _build_lot_detail_page(self) -> QtWidgets.QWidget:
+        """F推移・Fmap・KDEのlot集約縦配置。"""
+        page = QtWidgets.QWidget()
+        page.setObjectName("lotDetailPage")
+        layout = QtWidgets.QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-        layout.addWidget(self.fmap_section)
-
-        self.detail_divider = QtWidgets.QFrame()
-        self.detail_divider.setObjectName("detailDivider")
-        self.detail_divider.setFixedHeight(DETAIL_DIVIDER_HEIGHT)
-        layout.addWidget(self.detail_divider)
-        layout.addWidget(self.kde_section)
+        layout.addWidget(self.quality_trend_section)
 
         self.quality_trend_divider = QtWidgets.QFrame()
         self.quality_trend_divider.setObjectName("detailDivider")
@@ -505,8 +606,46 @@ class FqMapWidget(QtWidgets.QWidget):
             DETAIL_DIVIDER_HEIGHT
         )
         layout.addWidget(self.quality_trend_divider)
-        layout.addWidget(self.quality_trend_section)
-        return section
+        layout.addWidget(self.fmap_section)
+
+        self.detail_divider = QtWidgets.QFrame()
+        self.detail_divider.setObjectName("detailDivider")
+        self.detail_divider.setFixedHeight(DETAIL_DIVIDER_HEIGHT)
+        layout.addWidget(self.detail_divider)
+        layout.addWidget(self.kde_section)
+        return page
+
+    def _build_frame_detail_page(self) -> QtWidgets.QWidget:
+        """加工パス・生値Fmap・KDEの選択Frame横配置。"""
+        page = QtWidgets.QWidget()
+        page.setObjectName("frameDetailPage")
+        layout = QtWidgets.QHBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self.processing_path_trend = ProcessingPathWidget()
+        self.single_frame_map = SingleFrameMapWidget()
+        self.single_frame_kde = SingleFrameKdeWidget()
+        self.processing_path_trend.lot_mode_requested.connect(
+            self.show_lot_aggregate
+        )
+        self.frame_detail_widgets = (
+            self.processing_path_trend,
+            self.single_frame_map,
+            self.single_frame_kde,
+        )
+
+        for index, widget in enumerate(self.frame_detail_widgets):
+            widget.setObjectName(
+                widget.objectName() or "frameDetailPanel"
+            )
+            layout.addWidget(widget, stretch=1)
+            if index < len(self.frame_detail_widgets) - 1:
+                divider = QtWidgets.QFrame()
+                divider.setObjectName("frameDetailDivider")
+                divider.setFixedWidth(DETAIL_DIVIDER_HEIGHT)
+                layout.addWidget(divider)
+        return page
 
     def _build_fq_map_view(
         self,
@@ -516,19 +655,16 @@ class FqMapWidget(QtWidgets.QWidget):
     ) -> FqMapView:
         card = QtWidgets.QFrame()
         card.setObjectName("chartCard")
-        layout = QtWidgets.QHBoxLayout(card)
+        layout = QtWidgets.QVBoxLayout(card)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
 
-        plot_widget = pg.PlotWidget(background="#ffffff")
+        plot_widget = FqMapPlotWidget(background="#ffffff")
         plot_item = plot_widget.getPlotItem()
         plot_item.setMenuEnabled(False)
         plot_item.hideButtons()
         plot_item.setMouseEnabled(x=False, y=False)
         plot_item.getViewBox().invertY(True)
-        plot_item.getAxis("left").setWidth(
-            DASHBOARD_CONFIG.left_label_width
-        )
+        plot_item.getAxis("left").setWidth(205)
         plot_item.hideAxis("bottom")
         frame_axis = None
         if metric == "ng_rates":
@@ -559,7 +695,7 @@ class FqMapWidget(QtWidgets.QWidget):
         for axis_name in axis_names:
             axis = plot_item.getAxis(axis_name)
             axis_font = QtGui.QFont()
-            axis_font.setPointSize(7)
+            axis_font.setPointSize(9 if axis_name == "top" else 8)
             axis.setPen(pg.mkPen("#7a8492"))
             axis.setTextPen(pg.mkPen("#303846"))
             axis.setStyle(tickFont=axis_font, tickTextOffset=5)
@@ -595,6 +731,18 @@ class FqMapWidget(QtWidgets.QWidget):
         selection_region.setZValue(30)
         plot_item.addItem(selection_region)
 
+        cell_selection_rect = QtWidgets.QGraphicsRectItem()
+        cell_selection_rect.setPen(pg.mkPen("#173f8a", width=2.4))
+        cell_selection_rect.setBrush(
+            QtGui.QBrush(QtCore.Qt.BrushStyle.NoBrush)
+        )
+        cell_selection_rect.setAcceptedMouseButtons(
+            QtCore.Qt.MouseButton.NoButton
+        )
+        cell_selection_rect.setZValue(40)
+        cell_selection_rect.hide()
+        plot_item.addItem(cell_selection_rect)
+
         color_bar = pg.ColorBarItem(
             values=(0.0, 1.0),
             width=22,
@@ -604,25 +752,29 @@ class FqMapWidget(QtWidgets.QWidget):
             rounding=0.1,
             pen=pg.mkPen("#5f6875"),
         )
-        color_bar.setImageItem(image_item)
+        color_bar.setImageItem(image_item, insert_in=plot_item)
         color_bar.axis.setTextPen(pg.mkPen("#303846"))
         color_bar.axis.setLabel(color="#4b5563")
 
-        legend = pg.GraphicsLayoutWidget()
-        legend.setBackground("#ffffff")
-        legend.addItem(color_bar)
-        legend_container = QtWidgets.QWidget()
-        legend_container.setFixedWidth(
-            DASHBOARD_CONFIG.color_bar_width
+        vertical_scrollbar = QtWidgets.QScrollBar(
+            QtCore.Qt.Orientation.Vertical,
+            plot_widget,
         )
-        legend_layout = QtWidgets.QVBoxLayout(legend_container)
-        legend_layout.setContentsMargins(0, 0, 0, 0)
-        legend_layout.setSpacing(0)
-        if metric == "ng_rates":
-            legend_layout.addSpacing(FQ_MAP_TOP_AXIS_HEIGHT)
-        legend_layout.addWidget(legend)
-        layout.addWidget(plot_widget, stretch=1)
-        layout.addWidget(legend_container)
+        vertical_scrollbar.setObjectName("fqMapVerticalScrollBar")
+        vertical_scrollbar.setAccessibleName(
+            "FQmap検査項目の同期縦スクロール"
+        )
+        vertical_scrollbar.setToolTip(
+            "3段のFQmapを同じ検査項目へ縦スクロール"
+        )
+        vertical_scrollbar.setSingleStep(1)
+        vertical_scrollbar.hide()
+        vertical_scrollbar.valueChanged.connect(
+            self._scroll_fq_maps_vertically
+        )
+        plot_widget.set_vertical_scrollbar(vertical_scrollbar)
+
+        layout.addWidget(plot_widget)
         view = FqMapView(
             metric=metric,
             label=label,
@@ -631,7 +783,9 @@ class FqMapWidget(QtWidgets.QWidget):
             plot_item=plot_item,
             image_item=image_item,
             color_bar=color_bar,
+            vertical_scrollbar=vertical_scrollbar,
             selection_region=selection_region,
+            cell_selection_rect=cell_selection_rect,
             frame_axis=frame_axis,
         )
         view.mouse_proxy = pg.SignalProxy(
@@ -647,12 +801,11 @@ class FqMapWidget(QtWidgets.QWidget):
                 event,
             )
         )
-        if frame_axis is not None:
-            plot_item.getViewBox().sigResized.connect(
-                lambda *_, fq_view=view: (
-                    self._update_lot_axis_font(fq_view)
-                )
+        plot_item.getViewBox().sigResized.connect(
+            lambda *_, fq_view=view: self._fq_map_view_resized(
+                fq_view
             )
+        )
         return view
 
     def _build_horizontal_navigation(self) -> QtWidgets.QLayout:
@@ -739,13 +892,14 @@ class FqMapWidget(QtWidgets.QWidget):
         self.current_data = data
         if self.selected_colname not in data.colnames:
             self.selected_colname = data.colnames[0]
+            self._clear_frame_selection()
 
         ng_max = self._nice_upper(
             float(np.nanpercentile(data.ng_rates, 99.5)),
             minimum=1.0,
         )
-        mean_abs_max = self._nice_upper(
-            float(np.nanpercentile(np.abs(data.normalized_mean), 99.5)),
+        deviation_max = self._nice_upper(
+            float(np.nanpercentile(data.normalized_mean, 99.5)),
             minimum=0.1,
         )
         std_max = self._nice_upper(
@@ -756,7 +910,7 @@ class FqMapWidget(QtWidgets.QWidget):
             "ng_rates": (data.ng_rates, (0.0, ng_max)),
             "normalized_mean": (
                 data.normalized_mean,
-                (-mean_abs_max, mean_abs_max),
+                (0.0, deviation_max),
             ),
             "normalized_std": (
                 data.normalized_std,
@@ -798,11 +952,11 @@ class FqMapWidget(QtWidgets.QWidget):
             category,
             vision,
             ng_max,
-            mean_abs_max,
+            deviation_max,
             std_max,
         )
         self._configure_horizontal_scrollbar(data)
-        self.vertical_scroll_area.verticalScrollBar().setValue(0)
+        self._configure_vertical_scrollbars(reset_position=True)
 
     def _update_plot_heights(self) -> None:
         for view in self.views:
@@ -816,25 +970,99 @@ class FqMapWidget(QtWidgets.QWidget):
             )
         self.plots_container.adjustSize()
 
+    def _fq_map_view_resized(self, view: FqMapView) -> None:
+        """FQmap内部領域変更時の表示更新。"""
+        self._position_vertical_scrollbar(view)
+        if view.metric == "ng_rates":
+            self._update_lot_axis_font(view)
+        self._configure_vertical_scrollbars()
+
+    def _configure_vertical_scrollbars(
+        self,
+        reset_position: bool = False,
+    ) -> None:
+        """セル最小高に基づく3段共通の縦表示範囲。"""
+        if not self.views:
+            return
+
+        plot_heights = [
+            view.plot_item.getViewBox().sceneBoundingRect().height()
+            for view in self.views
+        ]
+        available_height = min(plot_heights)
+        if available_height <= 0.0:
+            return
+
+        row_count = len(self.current_data.colnames)
+        visible_rows = min(
+            row_count,
+            max(1, int(available_height // FQ_MAP_MIN_CELL_HEIGHT)),
+        )
+        maximum = max(0, row_count - visible_rows)
+        current_position = self.views[0].vertical_scrollbar.value()
+        if reset_position:
+            selected_row = self.current_data.colnames.index(
+                self.selected_colname
+            )
+            current_position = min(
+                maximum,
+                max(0, selected_row - visible_rows // 2),
+            )
+        current_position = min(current_position, maximum)
+
+        for view in self.views:
+            blocker = QtCore.QSignalBlocker(view.vertical_scrollbar)
+            view.vertical_scrollbar.setRange(0, maximum)
+            view.vertical_scrollbar.setPageStep(visible_rows)
+            view.vertical_scrollbar.setValue(current_position)
+            view.vertical_scrollbar.setVisible(maximum > 0)
+            del blocker
+            self._position_vertical_scrollbar(view)
+        self._set_vertical_view_range(current_position, visible_rows)
+
+    @QtCore.Slot(int)
+    def _scroll_fq_maps_vertically(self, first_row: int) -> None:
+        """3段FQmapの縦スクロール同期。"""
+        visible_rows = self.views[0].vertical_scrollbar.pageStep()
+        for view in self.views:
+            blocker = QtCore.QSignalBlocker(view.vertical_scrollbar)
+            view.vertical_scrollbar.setValue(first_row)
+            del blocker
+        self._set_vertical_view_range(first_row, visible_rows)
+
+    def _set_vertical_view_range(
+        self,
+        first_row: int,
+        visible_rows: int,
+    ) -> None:
+        """3段FQmapへの共通Y範囲反映。"""
+        lower = first_row - 0.5
+        upper = first_row + visible_rows - 0.5
+        for view in self.views:
+            view.plot_item.setYRange(lower, upper, padding=0.0)
+
+    @staticmethod
+    def _position_vertical_scrollbar(view: FqMapView) -> None:
+        """PlotWidget右端へのスクロールバー重ね表示。"""
+        scrollbar = view.vertical_scrollbar
+        extent = scrollbar.style().pixelMetric(
+            QtWidgets.QStyle.PixelMetric.PM_ScrollBarExtent
+        )
+        top = FQ_MAP_TOP_AXIS_HEIGHT if view.metric == "ng_rates" else 0
+        scrollbar.setGeometry(
+            max(0, view.plot_widget.width() - extent),
+            top,
+            extent,
+            max(0, view.plot_widget.height() - top),
+        )
+        scrollbar.raise_()
+
     @staticmethod
     def _colname_ticks(data: FqMapData) -> list[tuple[float, str]]:
-        """表示密度に応じたcolname目盛。"""
-        if len(data.colnames) <= 18:
-            return [
-                (float(row), colname)
-                for row, colname in enumerate(data.colnames)
-            ]
-
-        grouped_rows: dict[str, list[int]] = {}
-        for row, colname in enumerate(data.colnames):
-            base_colname = colname.rsplit("_v", maxsplit=1)[0]
-            grouped_rows.setdefault(base_colname, []).append(row)
+        """検査項目ごとのcolname目盛。"""
         return [
-            (
-                float(np.mean(rows)),
-                f"{base_colname}  ·  _v1/_v2/_v3",
-            )
-            for base_colname, rows in grouped_rows.items()
+            (float(row), colname)
+            for row, colname in enumerate(data.colnames)
         ]
 
     def _configure_horizontal_scrollbar(
@@ -881,6 +1109,15 @@ class FqMapWidget(QtWidgets.QWidget):
         self.latest_button.setEnabled(
             first_lot < self.horizontal_scrollbar.maximum()
         )
+        if (
+            self.selected_lot_index is not None
+            and not (
+                first_lot
+                <= self.selected_lot_index
+                < first_lot + VISIBLE_LOTS
+            )
+        ):
+            self._clear_frame_selection()
         self.frame_map.set_context(
             self.selected_colname,
             first_lot,
@@ -901,13 +1138,13 @@ class FqMapWidget(QtWidgets.QWidget):
     ) -> None:
         """クリックしたFQmap検査項目の選択。"""
         scene_position = event.scenePos()
-        if not view.plot_widget.sceneBoundingRect().contains(
+        if not view.plot_item.getViewBox().sceneBoundingRect().contains(
             scene_position
         ):
             return
         point = view.plot_item.getViewBox().mapSceneToView(scene_position)
-        column = round(point.x())
-        row = round(point.y())
+        column = math.floor(point.x() + 0.5)
+        row = math.floor(point.y() + 0.5)
         data = self.current_data
         if not (
             0 <= column < len(data.frame_numbers)
@@ -916,11 +1153,20 @@ class FqMapWidget(QtWidgets.QWidget):
             return
 
         self.selected_colname = data.colnames[row]
+        (
+            self.selected_lot_index,
+            self.selected_frame_no,
+        ) = self._lot_frame_from_column(column)
+        frame_available = bool(data.total_counts[row, column] > 0)
+        self.single_frame_data = None
         self._update_selection_regions()
         self.frame_map.set_context(
             self.selected_colname,
             self.horizontal_scrollbar.value(),
         )
+        self.frame_map.set_frame_available(frame_available)
+        if self.detail_mode == "frame" and frame_available:
+            self._update_selected_frame_detail()
         self._update_scope_label(
             data,
             self.category_combo.currentData(),
@@ -928,13 +1174,33 @@ class FqMapWidget(QtWidgets.QWidget):
         )
 
     def _update_selection_regions(self) -> None:
-        """3段FQマップの選択行同期。"""
+        """3段FQマップの選択行・セル同期。"""
         data = self.current_data
         row = data.colnames.index(self.selected_colname)
         for view in self.views:
             view.selection_region.setRegion(
                 (float(row) - 0.5, float(row) + 0.5)
             )
+            if (
+                self.selected_lot_index is None
+                or self.selected_frame_no is None
+            ):
+                view.cell_selection_rect.hide()
+                continue
+            column = (
+                self.selected_lot_index * len(FRAME_NUMBERS)
+                + self.selected_frame_no
+                - 1
+            )
+            view.cell_selection_rect.setRect(
+                QtCore.QRectF(
+                    float(column) - 0.5,
+                    float(row) - 0.5,
+                    1.0,
+                    1.0,
+                )
+            )
+            view.cell_selection_rect.show()
         self.fmap_selection_label.setText(self.selected_colname)
         self.kde.set_context(
             self.selected_colname,
@@ -944,6 +1210,60 @@ class FqMapWidget(QtWidgets.QWidget):
             self.selected_colname,
             self.horizontal_scrollbar.value(),
         )
+
+    def _clear_frame_selection(self) -> None:
+        """FQmapセルと単一Frame選択の解除。"""
+        self.selected_lot_index = None
+        self.selected_frame_no = None
+        self.single_frame_data = None
+        for view in self.views:
+            view.cell_selection_rect.hide()
+        if hasattr(self, "frame_map"):
+            self.frame_map.set_frame_available(False)
+
+    @QtCore.Slot()
+    def show_selected_frame(self) -> None:
+        """選択候補の単一Frame詳細表示。"""
+        if not self._update_selected_frame_detail():
+            return
+        self.detail_mode = "frame"
+        self.detail_stack.setCurrentWidget(self.frame_detail_page)
+
+    def _update_selected_frame_detail(self) -> bool:
+        """選択候補の単一Frame詳細更新。"""
+        if (
+            self.selected_lot_index is None
+            or self.selected_frame_no is None
+        ):
+            return False
+        data = build_single_frame_map_data(
+            self.repository,
+            self.current_data.lot_numbers[self.selected_lot_index],
+            self.selected_frame_no,
+            self.selected_colname,
+        )
+        self.single_frame_data = data
+        self.single_frame_map.set_data(data)
+        self.single_frame_kde.set_data(
+            build_single_frame_kde_data(data)
+        )
+        self.processing_path_trend.set_data(data)
+        return True
+
+    @QtCore.Slot()
+    def show_lot_aggregate(self) -> None:
+        """lot集約詳細表示への切替。"""
+        self.detail_mode = "lot"
+        self.detail_stack.setCurrentWidget(self.lot_detail_page)
+
+    @staticmethod
+    def _lot_frame_from_column(column: int) -> tuple[int, int]:
+        """FQmap列からlot位置とFrameNoへの変換。"""
+        lot_index, zero_based_frame = divmod(
+            column,
+            len(FRAME_NUMBERS),
+        )
+        return lot_index, zero_based_frame + 1
 
     def _update_x_axis(
         self,
@@ -974,9 +1294,9 @@ class FqMapWidget(QtWidgets.QWidget):
             / visible_lots
         )
         axis_font = QtGui.QFont()
-        axis_font.setPointSize(7)
+        axis_font.setPointSize(9)
         if lot_width < 110:
-            axis_font.setStretch(62)
+            axis_font.setStretch(58)
         elif lot_width < 140:
             axis_font.setStretch(70)
         view.plot_item.getAxis("top").setStyle(tickFont=axis_font)
@@ -1038,18 +1358,27 @@ class FqMapWidget(QtWidgets.QWidget):
         category: str | None,
         vision: str | None,
         ng_max: float,
-        mean_abs_max: float,
+        deviation_max: float,
         std_max: float,
     ) -> None:
         self.all_lots_label.setText(f"全{data.lot_count} lot")
         self._update_scope_label(data, category, vision)
-        self.ng_rate_label.setText(
-            f"総合NG率 {data.overall_ng_rate:.3f}%"
-            f" ({data.total_ng:,} NG)"
+        self.piece_yield_label.setText(
+            f"個片歩留まり {data.piece_yield:.3f}%"
+        )
+        self.piece_yield_label.setToolTip(
+            "検査項目が1つでもNGの個片を除外  |  "
+            f"OK {data.ok_pieces:,} / {data.total_pieces:,}個片"
         )
         self.scale_label.setText(
             f"NG 0–{ng_max:g}%  |  "
-            f"平均 ±{mean_abs_max:g}  |  std 0–{std_max:g}"
+            f"逸脱度 0–{deviation_max:g}  |  "
+            f"std 0–{std_max:g}"
+        )
+        self.scale_label.setToolTip(
+            "規格逸脱度: 個々の測定では"
+            "0=最良・規格中心 / 1=規格限界 / 1超=NG。"
+            "表示値はセル内の平均"
         )
 
     def _update_scope_label(
@@ -1114,7 +1443,7 @@ class FqMapWidget(QtWidgets.QWidget):
                 f"({ng_count:,}/{total_count:,})"
             )
         elif view.metric == "normalized_mean":
-            detail = f"規格位置・使用率 平均 {value:.4f}"
+            detail = f"規格逸脱度 平均 {value:.4f}"
         else:
             detail = f"規格位置・使用率 std {value:.4f}"
         self.hover_label.setText(prefix + detail)

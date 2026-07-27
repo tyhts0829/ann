@@ -6,14 +6,10 @@ from dataclasses import dataclass
 os.environ.setdefault("QT_API", "pyside6")
 
 import numpy as np
+import pandas as pd
 import pyqtgraph as pg
 from PySide6 import QtCore, QtGui, QtWidgets
-from scipy.ndimage import gaussian_filter1d  # type: ignore[import-untyped]
 
-from src.analysis.map_palettes import (
-    DENSITY_STOPS,
-    make_density_color_map,
-)
 from src.analysis.plot_style import make_lot_separator
 from src.analysis.quality_columns import SPEC_ORDER
 from src.dashboard_config import DASHBOARD_CONFIG
@@ -23,28 +19,23 @@ FRAME_NUMBERS = np.arange(1, 25)
 FRAME_TICK_NUMBERS = (1, 6, 12, 18, 24)
 VISIBLE_LOTS = DASHBOARD_CONFIG.visible_lots
 QUALITY_TREND_HEIGHT = DASHBOARD_CONFIG.quality_trend_height
-VALUE_AXIS_WIDTH = 50
-DENSITY_LEGEND_WIDTH = (
-    DASHBOARD_CONFIG.color_bar_width - VALUE_AXIS_WIDTH
-)
 
 
 @dataclass(frozen=True)
 class QualityTrendData:
-    """lot・FrameNo別の測定値密度データ。"""
+    """lot・FrameNo別の測定値分位点データ。"""
 
     colnames: tuple[str, ...]
     lot_numbers: tuple[str, ...]
     column_lots: tuple[str, ...]
     frame_numbers: np.ndarray
-    bin_values: np.ndarray
-    densities: np.ndarray
-    density_scales: np.ndarray
     sample_counts: np.ndarray
-    in_range_counts: np.ndarray
     ng_counts: np.ndarray
-    display_min: np.ndarray
-    display_max: np.ndarray
+    p05: np.ndarray
+    p25: np.ndarray
+    p50: np.ndarray
+    p75: np.ndarray
+    p95: np.ndarray
     spec_lower: np.ndarray
     spec_upper: np.ndarray
     units: tuple[str, ...]
@@ -58,99 +49,34 @@ def build_quality_trend_data(
     repository: QualityRepository,
     lot_numbers: tuple[str, ...] | None = None,
 ) -> QualityTrendData:
-    """lot・FrameNo別の測定値密度データ生成。"""
+    """lot・FrameNo別の測定値分位点データ生成。"""
+    lot_records = repository.lots()
+    all_lot_numbers = tuple(record[0] for record in lot_records)
     if lot_numbers is None:
-        lot_numbers = tuple(
-            record[0] for record in repository.lots()
-        )
-
-    bin_count = DASHBOARD_CONFIG.kde_bins
-    frame = repository.density_bins_by_colname_frame(
-        bin_count,
-        lot_numbers,
+        lot_numbers = all_lot_numbers
+    query_lot_numbers = (
+        None if lot_numbers == all_lot_numbers else lot_numbers
     )
+
+    frame = repository.quantiles_by_colname_frame(query_lot_numbers)
     available = set(frame["colname"])
     colnames = tuple(
         colname for colname in SPEC_ORDER if colname in available
     )
-    colname_indices = {
-        colname: index for index, colname in enumerate(colnames)
-    }
-    lot_indices = {
-        lot_number: index
-        for index, lot_number in enumerate(lot_numbers)
-    }
-    column_count = len(lot_numbers) * len(FRAME_NUMBERS)
-    shape = (len(colnames), column_count)
-
-    counts = np.zeros(
-        (*shape, bin_count),
-        dtype=np.float32,
+    index = pd.MultiIndex.from_product(
+        [colnames, lot_numbers, FRAME_NUMBERS],
+        names=["colname", "lot_number", "FrameNo"],
     )
-    sample_counts = np.zeros(shape, dtype=np.int64)
-    in_range_counts = np.zeros(shape, dtype=np.int64)
-    ng_counts = np.zeros(shape, dtype=np.int64)
-    for record in frame.itertuples(index=False):
-        row = colname_indices[record.colname]
-        column = (
-            lot_indices[record.lot_number] * len(FRAME_NUMBERS)
-            + int(record.FrameNo)
-            - 1
-        )
-        bin_indices = np.asarray(record.bin_indices, dtype=int)
-        counts[row, column, bin_indices] = np.asarray(
-            record.bin_counts,
-            dtype=np.float32,
-        )
-        sample_counts[row, column] = int(record.sample_count)
-        in_range_counts[row, column] = int(record.in_range_count)
-        ng_counts[row, column] = int(record.ng_count)
+    ordered = frame.set_index(
+        ["colname", "lot_number", "FrameNo"]
+    ).reindex(index)
+    shape = (len(colnames), len(lot_numbers) * len(FRAME_NUMBERS))
 
     metadata = (
         frame.drop_duplicates("colname")
         .set_index("colname")
         .reindex(colnames)
     )
-    display_min = metadata["plot_min"].to_numpy(dtype=float)
-    display_max = metadata["plot_max"].to_numpy(dtype=float)
-    bin_widths = (display_max - display_min) / bin_count
-    bin_values = (
-        display_min[:, None]
-        + (
-            np.arange(bin_count, dtype=float)[None, :] + 0.5
-        )
-        * bin_widths[:, None]
-    )
-
-    gaussian_filter1d(
-        counts,
-        DASHBOARD_CONFIG.kde_bandwidth_bins,
-        axis=2,
-        output=counts,
-        mode="constant",
-        truncate=4.0,
-    )
-    totals = counts.sum(axis=2, keepdims=True)
-    np.divide(
-        counts,
-        totals,
-        out=counts,
-        where=totals > 0.0,
-    )
-    coverage = np.divide(
-        in_range_counts,
-        sample_counts,
-        out=np.zeros(shape, dtype=float),
-        where=sample_counts > 0,
-    )
-    counts *= coverage[:, :, None]
-    counts /= bin_widths[:, None, None]
-    densities = counts.transpose(0, 2, 1).copy()
-    density_scales = np.asarray(
-        [_density_scale(density) for density in densities],
-        dtype=float,
-    )
-
     return QualityTrendData(
         colnames=colnames,
         lot_numbers=lot_numbers,
@@ -160,30 +86,31 @@ def build_quality_trend_data(
             for _ in FRAME_NUMBERS
         ),
         frame_numbers=np.tile(FRAME_NUMBERS, len(lot_numbers)),
-        bin_values=bin_values,
-        densities=densities,
-        density_scales=density_scales,
-        sample_counts=sample_counts,
-        in_range_counts=in_range_counts,
-        ng_counts=ng_counts,
-        display_min=display_min,
-        display_max=display_max,
+        sample_counts=(
+            ordered["sample_count"]
+            .fillna(0)
+            .to_numpy(dtype=np.int64)
+            .reshape(shape)
+        ),
+        ng_counts=(
+            ordered["ng_count"]
+            .fillna(0)
+            .to_numpy(dtype=np.int64)
+            .reshape(shape)
+        ),
+        p05=ordered["p05"].to_numpy(dtype=float).reshape(shape),
+        p25=ordered["p25"].to_numpy(dtype=float).reshape(shape),
+        p50=ordered["p50"].to_numpy(dtype=float).reshape(shape),
+        p75=ordered["p75"].to_numpy(dtype=float).reshape(shape),
+        p95=ordered["p95"].to_numpy(dtype=float).reshape(shape),
         spec_lower=metadata["spec_lower"].to_numpy(dtype=float),
         spec_upper=metadata["spec_upper"].to_numpy(dtype=float),
         units=tuple(metadata["meta_unit"]),
     )
 
 
-def _density_scale(density: np.ndarray) -> float:
-    """全lot共通の密度色上限。"""
-    positive = density[density > 0.0]
-    if positive.size == 0:
-        return 1.0
-    return float(np.percentile(positive, 99.5))
-
-
 class QualityTrendWidget(QtWidgets.QWidget):
-    """選択項目のFrame別測定値密度マップ。"""
+    """選択項目のFrame別分位点トレンド。"""
 
     hover_text_changed = QtCore.Signal(str)
 
@@ -205,10 +132,9 @@ class QualityTrendWidget(QtWidgets.QWidget):
         layout.setSpacing(0)
         layout.addWidget(self._build_context_panel())
         layout.addWidget(self._build_plot(), stretch=1)
-        layout.addWidget(self._build_density_legend())
 
     def _build_context_panel(self) -> QtWidgets.QWidget:
-        """密度と規格の説明表示。"""
+        """分位点と規格の説明表示。"""
         panel = QtWidgets.QWidget()
         panel.setObjectName("qualityTrendLabelPanel")
         panel.setFixedWidth(DASHBOARD_CONFIG.left_label_width)
@@ -219,7 +145,7 @@ class QualityTrendWidget(QtWidgets.QWidget):
         title = QtWidgets.QLabel("F推移")
         title.setObjectName("mapSectionTitle")
         title.setProperty("sectionRole", "detail")
-        caption = QtWidgets.QLabel("Frame別の生値密度")
+        caption = QtWidgets.QLabel("Frame別の生値分位点")
         caption.setObjectName("qualityTrendCaption")
         self.selection_label = QtWidgets.QLabel()
         self.selection_label.setObjectName("qualityTrendSelectionLabel")
@@ -235,16 +161,15 @@ class QualityTrendWidget(QtWidgets.QWidget):
         return panel
 
     def _build_plot(self) -> pg.PlotWidget:
-        """測定値密度マップ生成。"""
+        """分位点トレンドプロット生成。"""
         self.plot_widget = pg.PlotWidget(background="#ffffff")
         self.plot_item = self.plot_widget.getPlotItem()
         self.plot_item.setMenuEnabled(False)
         self.plot_item.hideButtons()
         self.plot_item.setMouseEnabled(x=False, y=False)
         self.plot_item.hideAxis("left")
-        self.plot_item.hideAxis("top")
         self.plot_item.showAxis("right")
-        self.plot_item.showGrid(y=True, alpha=0.16)
+        self.plot_item.showGrid(y=True, alpha=0.18)
 
         bottom_axis = self.plot_item.getAxis("bottom")
         bottom_font = QtGui.QFont()
@@ -262,33 +187,64 @@ class QualityTrendWidget(QtWidgets.QWidget):
         right_axis = self.plot_item.getAxis("right")
         right_font = QtGui.QFont()
         right_font.setPointSize(7)
-        right_axis.setWidth(VALUE_AXIS_WIDTH)
+        right_axis.setWidth(DASHBOARD_CONFIG.color_bar_width)
         right_axis.setPen(pg.mkPen("#7a8492"))
         right_axis.setTextPen(pg.mkPen("#303846"))
         right_axis.setStyle(tickFont=right_font, tickTextOffset=3)
         right_axis.enableAutoSIPrefix(False)
 
-        self.image_item = pg.ImageItem(axisOrder="row-major")
-        self.image_item.setColorMap(make_density_color_map())
-        self.image_item.setZValue(0)
-        self.plot_item.addItem(self.image_item)
-
+        hidden_pen = pg.mkPen(None)
+        self.p05_curve = pg.PlotDataItem(pen=hidden_pen)
+        self.p95_curve = pg.PlotDataItem(pen=hidden_pen)
+        self.p25_curve = pg.PlotDataItem(pen=hidden_pen)
+        self.p75_curve = pg.PlotDataItem(pen=hidden_pen)
+        self.outer_band = pg.FillBetweenItem(
+            self.p05_curve,
+            self.p95_curve,
+            brush=pg.mkBrush(74, 144, 164, 55),
+        )
+        self.inner_band = pg.FillBetweenItem(
+            self.p25_curve,
+            self.p75_curve,
+            brush=pg.mkBrush(49, 112, 139, 105),
+        )
+        self.median_curve = pg.PlotDataItem(
+            pen=pg.mkPen("#0f6f78", width=1.8),
+        )
         self.lower_line = self._build_spec_line("#3157a4")
         self.upper_line = self._build_spec_line("#c43d3d")
         self.hover_line = pg.InfiniteLine(
             angle=90,
             movable=False,
             pen=pg.mkPen(
-                "#4f5968",
+                "#667080",
                 width=1,
                 style=QtCore.Qt.PenStyle.DotLine,
             ),
         )
-        self.hover_line.setZValue(30)
+        self.hover_point = pg.ScatterPlotItem(
+            size=7,
+            pen=pg.mkPen("#ffffff", width=1),
+            brush=pg.mkBrush("#0f6f78"),
+        )
         self.hover_line.hide()
-        self.plot_item.addItem(self.lower_line)
-        self.plot_item.addItem(self.upper_line)
-        self.plot_item.addItem(self.hover_line)
+        self.hover_point.hide()
+
+        for item, z_value in (
+            (self.p05_curve, 1),
+            (self.p95_curve, 1),
+            (self.outer_band, 1),
+            (self.p25_curve, 2),
+            (self.p75_curve, 2),
+            (self.inner_band, 2),
+            (self.median_curve, 4),
+            (self.lower_line, 5),
+            (self.upper_line, 5),
+            (self.hover_line, 8),
+            (self.hover_point, 9),
+        ):
+            item.setZValue(z_value)
+            self.plot_item.addItem(item)
 
         for lot_index in range(1, len(self.data.lot_numbers)):
             separator = make_lot_separator(
@@ -305,51 +261,6 @@ class QualityTrendWidget(QtWidgets.QWidget):
         self.plot_widget.viewport().installEventFilter(self)
         return self.plot_widget
 
-    def _build_density_legend(self) -> QtWidgets.QWidget:
-        """密度カラーマップ凡例の生成。"""
-        legend = QtWidgets.QWidget()
-        legend.setObjectName("densityLegend")
-        legend.setFixedWidth(DENSITY_LEGEND_WIDTH)
-        layout = QtWidgets.QVBoxLayout(legend)
-        layout.setContentsMargins(4, 4, 4, 24)
-        layout.setSpacing(1)
-
-        title = QtWidgets.QLabel("密度")
-        title.setObjectName("densityLegendTitle")
-        title.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        high = QtWidgets.QLabel("高")
-        high.setObjectName("densityLegendLabel")
-        high.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        gradient = QtWidgets.QFrame()
-        gradient.setObjectName("densityGradient")
-        gradient.setMinimumWidth(12)
-        gradient.setStyleSheet(self._density_gradient_stylesheet())
-        low = QtWidgets.QLabel("低")
-        low.setObjectName("densityLegendLabel")
-        low.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-
-        layout.addWidget(title)
-        layout.addWidget(high)
-        layout.addWidget(gradient, stretch=1)
-        layout.addWidget(low)
-        return legend
-
-    @staticmethod
-    def _density_gradient_stylesheet() -> str:
-        """密度凡例用グラデーション定義。"""
-        stops = ", ".join(
-            f"stop:{position:g} {color}"
-            for position, color in DENSITY_STOPS
-        )
-        return (
-            "QFrame#densityGradient {"
-            "background: qlineargradient("
-            f"x1:0, y1:1, x2:0, y2:0, {stops}"
-            ");"
-            "border: 1px solid #aeb7c4;"
-            "}"
-        )
-
     @staticmethod
     def _build_spec_line(color: str) -> pg.InfiniteLine:
         """規格線の生成。"""
@@ -362,7 +273,6 @@ class QualityTrendWidget(QtWidgets.QWidget):
                 style=QtCore.Qt.PenStyle.DashLine,
             ),
         )
-        line.setZValue(20)
         line.hide()
         return line
 
@@ -388,36 +298,30 @@ class QualityTrendWidget(QtWidgets.QWidget):
         return super().eventFilter(watched, event)
 
     def _render_colname(self, colname: str) -> None:
-        """選択項目の全lot密度描画。"""
+        """選択項目の全lot分位点描画。"""
         row = self.data.colname_index(colname)
-        minimum = self.data.display_min[row]
-        maximum = self.data.display_max[row]
-        density_scale = self.data.density_scales[row]
-        self.image_item.setImage(
-            self.data.densities[row],
-            autoLevels=False,
-            levels=(0.0, density_scale),
-        )
-        self.image_item.setRect(
-            QtCore.QRectF(
-                -0.5,
-                minimum,
-                float(len(self.data.frame_numbers)),
-                maximum - minimum,
-            )
-        )
+        x_values = np.arange(len(self.data.frame_numbers), dtype=float)
+        self.p05_curve.setData(x_values, self.data.p05[row])
+        self.p25_curve.setData(x_values, self.data.p25[row])
+        self.median_curve.setData(x_values, self.data.p50[row])
+        self.p75_curve.setData(x_values, self.data.p75[row])
+        self.p95_curve.setData(x_values, self.data.p95[row])
 
         lower = self.data.spec_lower[row]
         upper = self.data.spec_upper[row]
         self._set_spec_line(self.lower_line, lower)
         self._set_spec_line(self.upper_line, upper)
-        self.current_y_range = (minimum, maximum)
+        self.current_y_range = self._y_range(row)
         self.plot_item.setYRange(
             *self.current_y_range,
             padding=0.0,
         )
 
         unit = self.data.units[row]
+        self.plot_item.getAxis("right").setLabel(
+            text=f"生値 ({unit})",
+            color="#4b5563",
+        )
         self.selection_label.setText(colname)
         spec_lines = []
         if np.isfinite(lower):
@@ -425,8 +329,8 @@ class QualityTrendWidget(QtWidgets.QWidget):
         if np.isfinite(upper):
             spec_lines.append(f"上限 {upper:g} {unit}")
         self.summary_label.setText(
-            f"生値軸 {minimum:.4g}–{maximum:.4g} {unit}\n"
-            "密度色 低→高（全lot共通）\n"
+            "中央値（実線）\n"
+            "P25–P75（濃帯）/ P05–P95（淡帯）\n"
             + "  ".join(spec_lines)
         )
 
@@ -453,6 +357,26 @@ class QualityTrendWidget(QtWidgets.QWidget):
                 )
             ]
         )
+
+    def _y_range(self, row: int) -> tuple[float, float]:
+        """全lotで共通の生値表示範囲。"""
+        values = [self.data.p05[row], self.data.p95[row]]
+        for spec in (
+            self.data.spec_lower[row],
+            self.data.spec_upper[row],
+        ):
+            if np.isfinite(spec):
+                values.append(np.asarray([spec]))
+        finite_values = np.concatenate(values)
+        minimum = float(np.nanmin(finite_values))
+        maximum = float(np.nanmax(finite_values))
+        span = maximum - minimum
+        padding = (
+            span * 0.08
+            if span > 0.0
+            else max(abs(maximum) * 0.05, 1.0)
+        )
+        return minimum - padding, maximum + padding
 
     @staticmethod
     def _set_spec_line(
@@ -502,7 +426,7 @@ class QualityTrendWidget(QtWidgets.QWidget):
         self,
         event: tuple[QtCore.QPointF],
     ) -> None:
-        """カーソル位置の密度詳細表示。"""
+        """カーソル位置の分位点詳細表示。"""
         scene_position = event[0]
         if not self.plot_widget.sceneBoundingRect().contains(
             scene_position
@@ -523,26 +447,21 @@ class QualityTrendWidget(QtWidgets.QWidget):
             return
 
         row = self.data.colname_index(self.current_colname)
-        minimum, maximum = self.current_y_range
-        bin_index = int(
-            np.clip(
-                (point.y() - minimum)
-                / (maximum - minimum)
-                * self.data.densities.shape[1],
-                0,
-                self.data.densities.shape[1] - 1,
-            )
-        )
-        density = self.data.densities[row, bin_index, column]
+        median = self.data.p50[row, column]
         self.hover_line.setPos(float(column))
+        self.hover_point.setData([float(column)], [float(median)])
         self.hover_line.show()
+        self.hover_point.show()
         unit = self.data.units[row]
         self.hover_text_changed.emit(
             f"{self.data.column_lots[column]}  |  "
             f"FrameNo {int(self.data.frame_numbers[column])}  |  "
             f"{self.current_colname}  |  "
-            f"生値 {point.y():.5g} {unit}  "
-            f"密度 {density:.5g}  |  "
+            f"P05 {self.data.p05[row, column]:.5g}  "
+            f"P25 {self.data.p25[row, column]:.5g}  "
+            f"中央値 {median:.5g}  "
+            f"P75 {self.data.p75[row, column]:.5g}  "
+            f"P95 {self.data.p95[row, column]:.5g} {unit}  |  "
             f"N {int(self.data.sample_counts[row, column]):,}  "
             f"NG {int(self.data.ng_counts[row, column]):,}"
         )
@@ -550,4 +469,5 @@ class QualityTrendWidget(QtWidgets.QWidget):
     def _clear_hover(self) -> None:
         """ホバー表示の解除。"""
         self.hover_line.hide()
+        self.hover_point.hide()
         self.hover_text_changed.emit("")

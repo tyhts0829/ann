@@ -320,6 +320,21 @@ QFrame#detailDivider {
     background: #c8d2de;
     border: none;
 }
+QFrame#frameDetailDivider {
+    background: #aebdce;
+    border: none;
+}
+QWidget#frameDetailPage,
+QWidget#processingPathWidget,
+QWidget#frameDetailPanel {
+    background: #ffffff;
+}
+QWidget#frameDetailToolbar,
+QWidget#processingPathHeader,
+QWidget#singleFrameKdeHeader {
+    background: #f2f6fb;
+    border-bottom: 1px solid #d3deeb;
+}
 QFrame#fqMapSeparator {
     background: #eef1f4;
     border: none;
@@ -364,14 +379,71 @@ QLabel#detailBadge {
     font-size: 10px;
     font-weight: 700;
 }
-QLabel#frameMapSelectionLabel {
+QLabel#frameModeBadge {
+    color: #08766b;
+    background: #e8f5f2;
+    border: 1px solid #8fc9c1;
+    padding: 2px 6px;
+    font-size: 10px;
+    font-weight: 700;
+}
+QLabel#frameMapSelectionLabel,
+QLabel#singleFrameSelectionLabel {
     color: #294d91;
+    font-size: 11px;
+    font-weight: 700;
+}
+QLabel#frameMapFrameLabel {
+    color: #303846;
+    font-size: 11px;
+    font-weight: 700;
+}
+QLabel#frameMapOrientationLabel {
+    color: #667080;
+    font-size: 10px;
+}
+QLabel#lowerNgKey {
+    color: #173f8a;
+    font-size: 10px;
+    font-weight: 700;
+}
+QLabel#upperNgKey {
+    color: #8f1d1d;
+    font-size: 10px;
+    font-weight: 700;
+}
+QLabel#processingPathSelectionLabel,
+QLabel#singleFrameKdeSelectionLabel {
+    color: #294d91;
+    font-size: 11px;
+    font-weight: 700;
+}
+QLabel#processingPathFrameLabel {
+    color: #303846;
     font-size: 11px;
     font-weight: 700;
 }
 QLabel#frameMapMetricLabel {
     color: #667080;
     font-size: 11px;
+}
+QToolButton#frameMapModeButton {
+    color: #294d91;
+    background: #ffffff;
+    border: 1px solid #9eb0c8;
+    min-height: 22px;
+    padding: 2px 6px;
+    font-size: 10px;
+    font-weight: 600;
+}
+QToolButton#frameMapModeButton:hover {
+    background: #eaf0f8;
+    border-color: #607da5;
+}
+QToolButton#frameMapModeButton:disabled {
+    color: #a6adb7;
+    background: #f3f5f7;
+    border-color: #d7dce2;
 }
 QLabel#kdeContextCaption {
     color: #667080;
@@ -394,18 +466,6 @@ QLabel#qualityTrendSummaryLabel {
     color: #667080;
     font-size: 10px;
 }
-QWidget#densityLegend {
-    background: #ffffff;
-}
-QLabel#densityLegendTitle {
-    color: #303846;
-    font-size: 8px;
-    font-weight: 600;
-}
-QLabel#densityLegendLabel {
-    color: #667080;
-    font-size: 8px;
-}
 QLabel#fieldLabel {
     color: #667080;
     font-size: 12px;
@@ -424,7 +484,8 @@ QLabel#scopeLabel {
     font-size: 12px;
 }
 QComboBox#categoryCombo,
-QComboBox#visionCombo {
+QComboBox#visionCombo,
+QComboBox#equipmentCombo {
     color: #20262f;
     background: #ffffff;
     border: 1px solid #aeb7c4;
@@ -433,23 +494,26 @@ QComboBox#visionCombo {
     font-size: 12px;
 }
 QComboBox#categoryCombo:hover,
-QComboBox#visionCombo:hover {
+QComboBox#visionCombo:hover,
+QComboBox#equipmentCombo:hover {
     border-color: #607086;
 }
 QComboBox#categoryCombo::drop-down,
-QComboBox#visionCombo::drop-down {
+QComboBox#visionCombo::drop-down,
+QComboBox#equipmentCombo::drop-down {
     border: none;
     width: 26px;
 }
 QComboBox#categoryCombo QAbstractItemView,
-QComboBox#visionCombo QAbstractItemView {
+QComboBox#visionCombo QAbstractItemView,
+QComboBox#equipmentCombo QAbstractItemView {
     color: #20262f;
     background: #ffffff;
     border: 1px solid #aeb7c4;
     selection-color: #ffffff;
     selection-background-color: #287d78;
 }
-QLabel#ngRateLabel {
+QLabel#pieceYieldLabel {
     color: #08766b;
     background: #e8f5f2;
     border: 1px solid #8fc9c1;
@@ -494,6 +558,27 @@ QScrollBar#heatmapScrollBar::sub-line:horizontal {
 }
 QScrollBar#heatmapScrollBar::add-page:horizontal,
 QScrollBar#heatmapScrollBar::sub-page:horizontal {
+    background: transparent;
+}
+QScrollBar#fqMapVerticalScrollBar:vertical {
+    background: #edf1f5;
+    border: 1px solid #c2c9d2;
+    width: 10px;
+}
+QScrollBar#fqMapVerticalScrollBar::handle:vertical {
+    background: #3a9a93;
+    min-height: 28px;
+    margin: 1px;
+}
+QScrollBar#fqMapVerticalScrollBar::handle:vertical:hover {
+    background: #267f79;
+}
+QScrollBar#fqMapVerticalScrollBar::add-line:vertical,
+QScrollBar#fqMapVerticalScrollBar::sub-line:vertical {
+    height: 0;
+}
+QScrollBar#fqMapVerticalScrollBar::add-page:vertical,
+QScrollBar#fqMapVerticalScrollBar::sub-page:vertical {
     background: transparent;
 }
 QScrollArea#heatmapScrollArea,

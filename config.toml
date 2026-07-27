@@ -17,6 +17,9 @@ quality_trend_height_ratio = 1
 # FQmapを構成する各ヒートマップの高さ
 fqmap_plot_height = 178
 
+# FQmapの1検査項目セルあたりの最小高さ
+fqmap_min_cell_height = 14
+
 # KDEの計算設定
 kde_bins = 60
 kde_bandwidth_bins = 1.5

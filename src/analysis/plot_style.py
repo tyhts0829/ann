@@ -3,7 +3,7 @@
 import pyqtgraph as pg
 from PySide6 import QtGui, QtWidgets
 
-LOT_SEPARATOR_COLOR = "#66758a"
+LOT_SEPARATOR_COLOR = "#8f99a6"
 LOT_SEPARATOR_WIDTH = 1.0
 LOT_SEPARATOR_Z = 25
 
