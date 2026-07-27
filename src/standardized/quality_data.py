@@ -246,11 +246,13 @@ class QualityRepository:
                         ELSE 0
                     END
                 ) AS ng_count,
+                min(value) AS minimum,
                 quantile_cont(value, 0.05) AS p05,
                 quantile_cont(value, 0.25) AS p25,
                 quantile_cont(value, 0.50) AS p50,
                 quantile_cont(value, 0.75) AS p75,
                 quantile_cont(value, 0.95) AS p95,
+                max(value) AS maximum,
                 min(limmin) AS spec_lower,
                 max(limmax) AS spec_upper,
                 any_value(meta_unit) AS meta_unit

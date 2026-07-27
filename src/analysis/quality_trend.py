@@ -23,7 +23,7 @@ QUALITY_TREND_HEIGHT = DASHBOARD_CONFIG.quality_trend_height
 
 @dataclass(frozen=True)
 class QualityTrendData:
-    """lot・FrameNo別の測定値分位点データ。"""
+    """lot・FrameNo別の測定値統計データ。"""
 
     colnames: tuple[str, ...]
     lot_numbers: tuple[str, ...]
@@ -31,11 +31,13 @@ class QualityTrendData:
     frame_numbers: np.ndarray
     sample_counts: np.ndarray
     ng_counts: np.ndarray
+    minimum: np.ndarray
     p05: np.ndarray
     p25: np.ndarray
     p50: np.ndarray
     p75: np.ndarray
     p95: np.ndarray
+    maximum: np.ndarray
     spec_lower: np.ndarray
     spec_upper: np.ndarray
     units: tuple[str, ...]
@@ -49,7 +51,7 @@ def build_quality_trend_data(
     repository: QualityRepository,
     lot_numbers: tuple[str, ...] | None = None,
 ) -> QualityTrendData:
-    """lot・FrameNo別の測定値分位点データ生成。"""
+    """lot・FrameNo別の測定値統計データ生成。"""
     lot_records = repository.lots()
     all_lot_numbers = tuple(record[0] for record in lot_records)
     if lot_numbers is None:
@@ -98,11 +100,13 @@ def build_quality_trend_data(
             .to_numpy(dtype=np.int64)
             .reshape(shape)
         ),
+        minimum=ordered["minimum"].to_numpy(dtype=float).reshape(shape),
         p05=ordered["p05"].to_numpy(dtype=float).reshape(shape),
         p25=ordered["p25"].to_numpy(dtype=float).reshape(shape),
         p50=ordered["p50"].to_numpy(dtype=float).reshape(shape),
         p75=ordered["p75"].to_numpy(dtype=float).reshape(shape),
         p95=ordered["p95"].to_numpy(dtype=float).reshape(shape),
+        maximum=ordered["maximum"].to_numpy(dtype=float).reshape(shape),
         spec_lower=metadata["spec_lower"].to_numpy(dtype=float),
         spec_upper=metadata["spec_upper"].to_numpy(dtype=float),
         units=tuple(metadata["meta_unit"]),
@@ -110,7 +114,7 @@ def build_quality_trend_data(
 
 
 class QualityTrendWidget(QtWidgets.QWidget):
-    """選択項目のFrame別分位点トレンド。"""
+    """選択項目のFrame別測定値トレンド。"""
 
     hover_text_changed = QtCore.Signal(str)
 
@@ -134,7 +138,7 @@ class QualityTrendWidget(QtWidgets.QWidget):
         layout.addWidget(self._build_plot(), stretch=1)
 
     def _build_context_panel(self) -> QtWidgets.QWidget:
-        """分位点と規格の説明表示。"""
+        """測定値範囲と規格の説明表示。"""
         panel = QtWidgets.QWidget()
         panel.setObjectName("qualityTrendLabelPanel")
         panel.setFixedWidth(DASHBOARD_CONFIG.left_label_width)
@@ -145,7 +149,7 @@ class QualityTrendWidget(QtWidgets.QWidget):
         title = QtWidgets.QLabel("F推移")
         title.setObjectName("mapSectionTitle")
         title.setProperty("sectionRole", "detail")
-        caption = QtWidgets.QLabel("Frame別の生値分位点")
+        caption = QtWidgets.QLabel("Frame別の生値範囲")
         caption.setObjectName("qualityTrendCaption")
         self.selection_label = QtWidgets.QLabel()
         self.selection_label.setObjectName("qualityTrendSelectionLabel")
@@ -161,7 +165,7 @@ class QualityTrendWidget(QtWidgets.QWidget):
         return panel
 
     def _build_plot(self) -> pg.PlotWidget:
-        """分位点トレンドプロット生成。"""
+        """測定値トレンドプロット生成。"""
         self.plot_widget = pg.PlotWidget(background="#ffffff")
         self.plot_item = self.plot_widget.getPlotItem()
         self.plot_item.setMenuEnabled(False)
@@ -198,6 +202,12 @@ class QualityTrendWidget(QtWidgets.QWidget):
         self.p95_curve = pg.PlotDataItem(pen=hidden_pen)
         self.p25_curve = pg.PlotDataItem(pen=hidden_pen)
         self.p75_curve = pg.PlotDataItem(pen=hidden_pen)
+        self.minimum_curve = pg.PlotDataItem(
+            pen=pg.mkPen("#526f79", width=1.0),
+        )
+        self.maximum_curve = pg.PlotDataItem(
+            pen=pg.mkPen("#526f79", width=1.0),
+        )
         self.outer_band = pg.FillBetweenItem(
             self.p05_curve,
             self.p95_curve,
@@ -237,6 +247,8 @@ class QualityTrendWidget(QtWidgets.QWidget):
             (self.p25_curve, 2),
             (self.p75_curve, 2),
             (self.inner_band, 2),
+            (self.minimum_curve, 3),
+            (self.maximum_curve, 3),
             (self.median_curve, 4),
             (self.lower_line, 5),
             (self.upper_line, 5),
@@ -298,14 +310,16 @@ class QualityTrendWidget(QtWidgets.QWidget):
         return super().eventFilter(watched, event)
 
     def _render_colname(self, colname: str) -> None:
-        """選択項目の全lot分位点描画。"""
+        """選択項目の全lot統計値描画。"""
         row = self.data.colname_index(colname)
         x_values = np.arange(len(self.data.frame_numbers), dtype=float)
+        self.minimum_curve.setData(x_values, self.data.minimum[row])
         self.p05_curve.setData(x_values, self.data.p05[row])
         self.p25_curve.setData(x_values, self.data.p25[row])
         self.median_curve.setData(x_values, self.data.p50[row])
         self.p75_curve.setData(x_values, self.data.p75[row])
         self.p95_curve.setData(x_values, self.data.p95[row])
+        self.maximum_curve.setData(x_values, self.data.maximum[row])
 
         lower = self.data.spec_lower[row]
         upper = self.data.spec_upper[row]
@@ -329,7 +343,7 @@ class QualityTrendWidget(QtWidgets.QWidget):
         if np.isfinite(upper):
             spec_lines.append(f"上限 {upper:g} {unit}")
         self.summary_label.setText(
-            "中央値（実線）\n"
+            "min / max（灰細線）/ 中央値（緑線）\n"
             "P25–P75（濃帯）/ P05–P95（淡帯）\n"
             + "  ".join(spec_lines)
         )
@@ -360,7 +374,7 @@ class QualityTrendWidget(QtWidgets.QWidget):
 
     def _y_range(self, row: int) -> tuple[float, float]:
         """全lotで共通の生値表示範囲。"""
-        values = [self.data.p05[row], self.data.p95[row]]
+        values = [self.data.minimum[row], self.data.maximum[row]]
         for spec in (
             self.data.spec_lower[row],
             self.data.spec_upper[row],
@@ -457,11 +471,13 @@ class QualityTrendWidget(QtWidgets.QWidget):
             f"{self.data.column_lots[column]}  |  "
             f"FrameNo {int(self.data.frame_numbers[column])}  |  "
             f"{self.current_colname}  |  "
+            f"min {self.data.minimum[row, column]:.5g}  "
             f"P05 {self.data.p05[row, column]:.5g}  "
             f"P25 {self.data.p25[row, column]:.5g}  "
             f"中央値 {median:.5g}  "
             f"P75 {self.data.p75[row, column]:.5g}  "
-            f"P95 {self.data.p95[row, column]:.5g} {unit}  |  "
+            f"P95 {self.data.p95[row, column]:.5g}  "
+            f"max {self.data.maximum[row, column]:.5g} {unit}  |  "
             f"N {int(self.data.sample_counts[row, column]):,}  "
             f"NG {int(self.data.ng_counts[row, column]):,}"
         )

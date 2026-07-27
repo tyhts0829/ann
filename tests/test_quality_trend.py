@@ -50,10 +50,12 @@ def test_quality_trend_data_contract(
         "LOT_20260601_A",
     ) * 24
     assert data.lot_numbers[-1] == "LOT_20260720_B"
+    assert np.all(data.minimum <= data.p05)
     assert np.all(data.p05 <= data.p25)
     assert np.all(data.p25 <= data.p50)
     assert np.all(data.p50 <= data.p75)
     assert np.all(data.p75 <= data.p95)
+    assert np.all(data.p95 <= data.maximum)
     assert set(data.units) == {"mm", "mm²"}
     assert all(data.units)
 
@@ -104,7 +106,13 @@ def test_quality_trend_matches_source_values(
     ).sum()
 
     assert len(source) == 288
+    assert quality_trend_data.minimum[row, 0] == pytest.approx(
+        source["value"].min()
+    )
     assert np.allclose(actual, expected)
+    assert quality_trend_data.maximum[row, 0] == pytest.approx(
+        source["value"].max()
+    )
     assert quality_trend_data.ng_counts[row, 0] == ng_count
 
 
@@ -169,7 +177,9 @@ def test_quality_trend_excludes_missing_values_from_count(
         repository.close()
 
     assert frame.loc[0, "sample_count"] == 2
+    assert frame.loc[0, "minimum"] == pytest.approx(1.0)
     assert frame.loc[0, "p50"] == pytest.approx(1.5)
+    assert frame.loc[0, "maximum"] == pytest.approx(2.0)
 
 
 def test_quality_trend_widget_context(
@@ -185,7 +195,13 @@ def test_quality_trend_widget_context(
 
     row = quality_trend_data.colname_index("Work_Xw_v2")
     _, median = widget.median_curve.getData()
+    _, minimum = widget.minimum_curve.getData()
+    _, maximum = widget.maximum_curve.getData()
     assert np.allclose(median, quality_trend_data.p50[row])
+    assert np.allclose(minimum, quality_trend_data.minimum[row])
+    assert np.allclose(maximum, quality_trend_data.maximum[row])
+    assert widget.minimum_curve.opts["pen"].color().name() == "#526f79"
+    assert widget.maximum_curve.opts["pen"].color().name() == "#526f79"
     assert isinstance(widget.outer_band, pg.FillBetweenItem)
     assert isinstance(widget.inner_band, pg.FillBetweenItem)
     assert widget.lower_line.isVisible()
@@ -198,6 +214,9 @@ def test_quality_trend_widget_context(
     assert widget.plot_item.viewRange()[0] == pytest.approx(
         [92 * 24 - 0.5, 100 * 24 - 0.5]
     )
+    y_min, y_max = widget.plot_item.viewRange()[1]
+    assert y_min < float(np.nanmin(quality_trend_data.minimum[row]))
+    assert y_max > float(np.nanmax(quality_trend_data.maximum[row]))
     assert (
         widget.plot_item.getAxis("right").label.toPlainText().strip()
         == "生値 (mm)"
@@ -244,6 +263,8 @@ def test_quality_trend_hover(
     assert "FrameNo 6" in hover_texts[-1]
     assert "P05" in hover_texts[-1]
     assert "中央値" in hover_texts[-1]
+    assert "min" in hover_texts[-1]
+    assert "max" in hover_texts[-1]
     assert "N 288" in hover_texts[-1]
     assert "NG" in hover_texts[-1]
     assert widget.hover_line.isVisible()
