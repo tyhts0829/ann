@@ -16,7 +16,7 @@ from src.analysis.plot_style import (
 )
 from src.analysis.quality_columns import SPEC_ORDER
 from src.dashboard_config import DASHBOARD_CONFIG
-from src.standardized.quality_data import QualityRepository
+from src.quality_repository import QualityRepository
 
 KDE_BOTTOM_AXIS_HEIGHT = 28
 

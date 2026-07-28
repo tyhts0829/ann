@@ -57,6 +57,8 @@ from src.dashboard_config import (
     DASHBOARD_CONFIG,
     load_dashboard_config,
 )
+from src.judged.add_quality_judgement import add_judgement
+from src.quality_repository import QualityRepository
 from src.raw.generate_quality_data import (
     DEFAULT_SEED,
     MEASUREMENTS,
@@ -70,14 +72,25 @@ from src.raw.generate_quality_data import (
 from src.raw.generate_quality_data import (
     _write_manifest as write_raw_manifest,
 )
-from src.standardized.quality_data import QualityRepository
 from src.standardized.standardize_quality_data import standardize
 
-DATA_PATH = (
+STANDARDIZED_DATA_PATH = (
     Path(__file__).resolve().parents[1]
     / "data"
     / "standardized"
     / "quality_data_100lots.parquet"
+)
+JUDGED_DATA_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "data"
+    / "judged"
+    / "quality_data_100lots.parquet"
+)
+ANALYSIS_DATA_DIR = (
+    Path(__file__).resolve().parents[1]
+    / "data"
+    / "analysis"
+    / "quality_data_100lots"
 )
 RAW_DATA_PATH = (
     Path(__file__).resolve().parents[1]
@@ -89,7 +102,7 @@ RAW_DATA_PATH = (
 
 @pytest.fixture(scope="module")
 def repository() -> QualityRepository:
-    return QualityRepository(DATA_PATH)
+    return QualityRepository(ANALYSIS_DATA_DIR)
 
 
 def test_all_lot_fq_map(repository: QualityRepository) -> None:
@@ -149,14 +162,23 @@ def test_all_lot_fq_map(repository: QualityRepository) -> None:
 
 def test_raw_and_standardized_spec_columns() -> None:
     raw_file = pq.ParquetFile(RAW_DATA_PATH)
-    standardized_file = pq.ParquetFile(DATA_PATH)
+    standardized_file = pq.ParquetFile(STANDARDIZED_DATA_PATH)
+    judged_file = pq.ParquetFile(JUDGED_DATA_PATH)
 
     assert raw_file.metadata.num_rows == 31_104_000
     assert standardized_file.metadata.num_rows == 31_104_000
+    assert judged_file.metadata.num_rows == 31_104_000
     assert "spec_position" not in raw_file.schema_arrow.names
     assert "spec_usage" not in raw_file.schema_arrow.names
     assert "spec_position" in standardized_file.schema_arrow.names
     assert "spec_usage" in standardized_file.schema_arrow.names
+    assert {
+        "normalized_value",
+        "normalized_deviation",
+        "is_judgement_target",
+        "is_ng",
+        "ng_direction",
+    }.issubset(judged_file.schema_arrow.names)
     assert raw_file.schema_arrow.metadata[b"dataset_stage"] == b"raw"
     assert (
         raw_file.schema_arrow.metadata[b"baseline_noise"]
@@ -168,6 +190,7 @@ def test_raw_and_standardized_spec_columns() -> None:
         standardized_file.schema_arrow.metadata[b"dataset_stage"]
         == b"standardized"
     )
+    assert judged_file.schema_arrow.metadata[b"dataset_stage"] == b"judged"
 
     frame = standardized_file.read_row_group(
         0,
@@ -252,6 +275,7 @@ def test_meta_unit_generation_and_standardization(
 
     raw_path = tmp_path / "raw.parquet"
     standardized_path = tmp_path / "standardized.parquet"
+    judged_path = tmp_path / "judged.parquet"
     pq.write_table(
         raw_table,
         raw_path,
@@ -293,8 +317,18 @@ def test_meta_unit_generation_and_standardization(
     )
     assert standardized_manifest["metadata_columns"] == ["meta_unit"]
 
+    add_judgement(standardized_path, judged_path)
+    judged_table = pq.read_table(judged_path)
+    assert judged_table.column("meta_unit").to_pylist() == (
+        raw_table.column("meta_unit").to_pylist()
+    )
+    assert judged_table.schema.metadata[b"dataset_version"] == b"4.2"
 
-@pytest.mark.parametrize("path", [RAW_DATA_PATH, DATA_PATH])
+
+@pytest.mark.parametrize(
+    "path",
+    [RAW_DATA_PATH, STANDARDIZED_DATA_PATH, JUDGED_DATA_PATH],
+)
 def test_foreign_and_defect_values_are_nonnegative(path: Path) -> None:
     with duckdb.connect() as connection:
         result = connection.execute(
@@ -338,6 +372,13 @@ def test_data_pipeline_script_layout() -> None:
     assert (
         root / "src" / "standardized" / "standardize_quality_data.py"
     ).is_file()
+    assert (
+        root / "src" / "judged" / "add_quality_judgement.py"
+    ).is_file()
+    assert (
+        root / "src" / "aggregated" / "build_quality_aggregates.py"
+    ).is_file()
+    assert (root / "data_pipeline.md").is_file()
     assert not (root / "scripts" / "generate_quality_data.py").exists()
     assert (root / "src" / "analysis" / "fq_map.py").is_file()
     assert (root / "src" / "analysis" / "frame_map.py").is_file()

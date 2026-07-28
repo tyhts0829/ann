@@ -22,7 +22,7 @@ from src.analysis.plot_style import (
 )
 from src.analysis.quality_columns import SPEC_ORDER
 from src.dashboard_config import DASHBOARD_CONFIG
-from src.standardized.quality_data import QualityRepository
+from src.quality_repository import QualityRepository
 
 POSITION_X = np.arange(1, 25)
 POSITION_Y = np.arange(1, 13)
@@ -106,26 +106,30 @@ def build_frame_map_data(
     frame = repository.metrics_by_colname_position(lot_numbers)
     available = set(frame["colname"])
     colnames = tuple(colname for colname in SPEC_ORDER if colname in available)
+    index = pd.MultiIndex.from_product(
+        [colnames, lot_numbers, POSITION_Y, POSITION_X],
+        names=["colname", "lot_number", "PositionY", "PositionX"],
+    )
+    ordered = frame.set_index(
+        ["colname", "lot_number", "PositionY", "PositionX"]
+    ).reindex(index)
+    shape = (
+        len(colnames),
+        len(lot_numbers),
+        len(POSITION_Y),
+        len(POSITION_X),
+    )
     return FrameMapData(
         colnames=colnames,
         lot_numbers=lot_numbers,
-        ng_rates=_position_matrices(
-            frame,
-            "ng_rate",
-            colnames,
-            lot_numbers,
+        ng_rates=(
+            ordered["ng_rate"].to_numpy(dtype=float).reshape(shape)
         ),
-        normalized_mean=_position_matrices(
-            frame,
-            "normalized_mean",
-            colnames,
-            lot_numbers,
+        normalized_mean=(
+            ordered["normalized_mean"].to_numpy(dtype=float).reshape(shape)
         ),
-        normalized_std=_position_matrices(
-            frame,
-            "normalized_std",
-            colnames,
-            lot_numbers,
+        normalized_std=(
+            ordered["normalized_std"].to_numpy(dtype=float).reshape(shape)
         ),
     )
 
@@ -155,16 +159,11 @@ def build_single_frame_map_data(
     first = frame.iloc[0]
     spec_lower = float(first["limmin"])
     spec_upper = float(first["limmax"])
-    lower_ng_flags = (
-        raw_values < spec_lower
-        if np.isfinite(spec_lower)
-        else np.zeros(shape, dtype=bool)
+    ng_directions = (
+        indexed["ng_direction"].to_numpy(dtype=np.int8).reshape(shape)
     )
-    upper_ng_flags = (
-        raw_values > spec_upper
-        if np.isfinite(spec_upper)
-        else np.zeros(shape, dtype=bool)
-    )
+    lower_ng_flags = ng_directions == -1
+    upper_ng_flags = ng_directions == 1
     return SingleFrameMapData(
         lot_number=lot_number,
         frame_no=frame_no,
@@ -190,36 +189,6 @@ def build_ng_overlay(data: SingleFrameMapData) -> np.ndarray:
     overlay[data.lower_ng_flags] = LOWER_NG_RGBA
     overlay[data.upper_ng_flags] = UPPER_NG_RGBA
     return overlay
-
-
-def _position_matrices(
-    frame: pd.DataFrame,
-    value_column: str,
-    colnames: tuple[str, ...],
-    lot_numbers: tuple[str, ...],
-) -> np.ndarray:
-    """検査項目ごとのlot・製品座標行列。"""
-    index = pd.MultiIndex.from_product(
-        [lot_numbers, POSITION_Y, POSITION_X],
-        names=["lot_number", "PositionY", "PositionX"],
-    )
-    matrices = []
-    for colname in colnames:
-        subset = frame[frame["colname"] == colname]
-        matrix = (
-            subset.set_index(["lot_number", "PositionY", "PositionX"])[
-                value_column
-            ]
-            .reindex(index)
-            .to_numpy(dtype=float)
-            .reshape(
-                len(lot_numbers),
-                len(POSITION_Y),
-                len(POSITION_X),
-            )
-        )
-        matrices.append(matrix)
-    return np.stack(matrices)
 
 
 def _add_white_grid(plot_item: pg.PlotItem) -> None:

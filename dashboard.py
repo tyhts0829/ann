@@ -27,7 +27,7 @@ from src.analysis.quality_trend import (
     build_quality_trend_data,
 )
 from src.dashboard_config import DASHBOARD_CONFIG
-from src.standardized.quality_data import QualityRepository
+from src.quality_repository import QualityRepository
 
 
 class DashboardScrollArea(QtWidgets.QScrollArea):
@@ -64,14 +64,14 @@ class DashboardDataWorker(QtCore.QObject):
     loaded = QtCore.Signal(object, object, object, object)
     failed = QtCore.Signal(str)
 
-    def __init__(self, parquet_path: Path) -> None:
+    def __init__(self, analysis_dir: Path) -> None:
         super().__init__()
-        self.parquet_path = parquet_path
+        self.analysis_dir = analysis_dir
 
     @QtCore.Slot()
     def load(self) -> None:
-        """FQmap・Fmap・KDE・F推移集計データの生成。"""
-        repository = QualityRepository(self.parquet_path)
+        """FQmap・Fmap・KDE・F推移用データの読込。"""
+        repository = QualityRepository(self.analysis_dir)
         try:
             fq_map_data = build_fq_map_data(repository)
             lot_numbers = fq_map_data.lot_numbers
@@ -87,7 +87,7 @@ class DashboardDataWorker(QtCore.QObject):
                 repository,
                 lot_numbers,
             )
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001
             self.failed.emit(str(error))
         else:
             self.loaded.emit(
@@ -140,7 +140,7 @@ class DashboardWindow(QtWidgets.QMainWindow):
         QtCore.QTimer.singleShot(0, self._start_data_load)
 
     def _build_loading_widget(self) -> QtWidgets.QWidget:
-        """初期集計中の表示。"""
+        """初期読込中の表示。"""
         container = QtWidgets.QWidget()
         container.setObjectName("loadingContainer")
         layout = QtWidgets.QVBoxLayout(container)
@@ -157,8 +157,7 @@ class DashboardWindow(QtWidgets.QMainWindow):
         title.setObjectName("loadingTitle")
         title.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.loading_message = QtWidgets.QLabel(
-            "FQmap・Fmap・KDE・F推移の集計中です。"
-            "しばらくお待ちください。"
+            "事前集計済みの品質データを読み込んでいます。しばらくお待ちください。"
         )
         self.loading_message.setObjectName("loadingMessage")
         self.loading_message.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
@@ -175,9 +174,9 @@ class DashboardWindow(QtWidgets.QMainWindow):
 
     @QtCore.Slot()
     def _start_data_load(self) -> None:
-        """バックグラウンド集計の開始。"""
+        """バックグラウンド読込の開始。"""
         thread = QtCore.QThread(self)
-        worker = DashboardDataWorker(self.repository.parquet_path)
+        worker = DashboardDataWorker(self.repository.analysis_dir)
         worker.moveToThread(thread)
 
         thread.started.connect(worker.load)
@@ -215,9 +214,7 @@ class DashboardWindow(QtWidgets.QMainWindow):
         self.dashboard_scroll_area = DashboardScrollArea()
         self.dashboard_scroll_area.setObjectName("dashboardScrollArea")
         self.dashboard_scroll_area.setWidgetResizable(False)
-        self.dashboard_scroll_area.setFrameShape(
-            QtWidgets.QFrame.Shape.NoFrame
-        )
+        self.dashboard_scroll_area.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         self.dashboard_scroll_area.setHorizontalScrollBarPolicy(
             QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
@@ -231,7 +228,7 @@ class DashboardWindow(QtWidgets.QMainWindow):
 
     @QtCore.Slot(str)
     def _show_load_error(self, message: str) -> None:
-        """初期集計エラーの表示。"""
+        """初期読込エラーの表示。"""
         if self._close_requested:
             return
         self.loading_progress.hide()
@@ -623,10 +620,10 @@ def parse_args() -> argparse.Namespace:
         default=(
             Path(__file__).resolve().parent
             / "data"
-            / "standardized"
-            / "quality_data_100lots.parquet"
+            / "analysis"
+            / "quality_data_100lots"
         ),
-        help="標準化済み品質データParquetのパス",
+        help="事前集計済み品質データbundleのディレクトリ",
     )
     return parser.parse_args()
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import duckdb
@@ -16,20 +17,26 @@ from src.analysis.quality_trend import (
     build_quality_trend_data,
 )
 from src.dashboard_config import DASHBOARD_CONFIG
-from src.standardized.quality_data import QualityRepository
+from src.quality_repository import QualityRepository
 
 
-DATA_PATH = (
+JUDGED_DATA_PATH = (
     Path(__file__).resolve().parents[1]
     / "data"
-    / "standardized"
+    / "judged"
     / "quality_data_100lots.parquet"
+)
+ANALYSIS_DATA_DIR = (
+    Path(__file__).resolve().parents[1]
+    / "data"
+    / "analysis"
+    / "quality_data_100lots"
 )
 
 
 @pytest.fixture(scope="module")
 def quality_trend_data() -> QualityTrendData:
-    repository = QualityRepository(DATA_PATH)
+    repository = QualityRepository(ANALYSIS_DATA_DIR)
     try:
         return build_quality_trend_data(repository)
     finally:
@@ -78,7 +85,7 @@ def test_quality_trend_matches_source_values(
                   AND NOT meta_ignore
             """,
             [
-                str(DATA_PATH),
+                str(JUDGED_DATA_PATH),
                 lot_number,
                 frame_number,
                 colname,
@@ -134,7 +141,7 @@ def test_quality_trend_source_units() -> None:
                     GROUP BY colname
                 )
             """,
-            [str(DATA_PATH)],
+            [str(JUDGED_DATA_PATH)],
         ).fetchone()
         assert result is not None
         missing_count, maximum_unit_count = result
@@ -146,31 +153,44 @@ def test_quality_trend_source_units() -> None:
 def test_quality_trend_excludes_missing_values_from_count(
     tmp_path: Path,
 ) -> None:
-    path = tmp_path / "missing_value.parquet"
+    analysis_dir = tmp_path / "analysis"
+    analysis_dir.mkdir()
+    frame_path = analysis_dir / "frame_item_stats.parquet"
     pq.write_table(
         pa.table(
             {
-                "lot_number": ["LOT_A"] * 3,
-                "FrameNo": [1] * 3,
-                "colname": ["Work_Xw_v1"] * 3,
-                "value": pa.array(
-                    [1.0, 2.0, None],
-                    type=pa.float64(),
-                ),
-                "limmin": [0.0] * 3,
-                "limmax": [3.0] * 3,
-                "meta_best": pa.array(
-                    [None] * 3,
-                    type=pa.float64(),
-                ),
-                "meta_unit": ["mm"] * 3,
-                "meta_type": ["spec"] * 3,
-                "meta_ignore": [False] * 3,
+                "lot_number": ["LOT_A"],
+                "FrameNo": [1],
+                "colname": ["Work_Xw_v1"],
+                "sample_count": [2],
+                "ng_count": [0],
+                "minimum": [1.0],
+                "p05": [1.05],
+                "p25": [1.25],
+                "p50": [1.5],
+                "p75": [1.75],
+                "p95": [1.95],
+                "maximum": [2.0],
+                "spec_lower": [0.0],
+                "spec_upper": [3.0],
+                "meta_unit": ["mm"],
             }
         ),
-        path,
+        frame_path,
     )
-    repository = QualityRepository(path)
+    manifest = {
+        "source_detail": "../detail.parquet",
+        "kde_bins": 60,
+        "files": {
+            "frame_item_stats": {"file": frame_path.name},
+        },
+        "ng_bit_mapping": [],
+    }
+    (analysis_dir / "manifest.json").write_text(
+        json.dumps(manifest),
+        encoding="utf-8",
+    )
+    repository = QualityRepository(analysis_dir)
     try:
         frame = repository.quantiles_by_colname_frame()
     finally:

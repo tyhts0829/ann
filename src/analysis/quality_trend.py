@@ -13,7 +13,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from src.analysis.plot_style import make_lot_separator
 from src.analysis.quality_columns import SPEC_ORDER
 from src.dashboard_config import DASHBOARD_CONFIG
-from src.standardized.quality_data import QualityRepository
+from src.quality_repository import QualityRepository
 
 FRAME_NUMBERS = np.arange(1, 25)
 FRAME_TICK_NUMBERS = (1, 6, 12, 18, 24)

@@ -44,7 +44,7 @@ from src.analysis.single_frame_kde import (
     build_single_frame_kde_data,
 )
 from src.dashboard_config import DASHBOARD_CONFIG
-from src.standardized.quality_data import QualityRepository
+from src.quality_repository import QualityRepository
 
 FRAME_NUMBERS = np.arange(1, 25)
 FRAME_TICK_NUMBERS = (1, 6, 12, 18, 24)
